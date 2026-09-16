@@ -10,7 +10,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .calibration import Classifier, state_dir
+from .calibration import Calibration, Classifier, calibration_path, state_dir
 from .detector import FaceDetector
 from .displays import Display, active_displays, cursor_position, display_at, warp_cursor
 from .pose import Pose, estimate
@@ -96,6 +96,7 @@ class CursorMemory:
 
 class Tracker:
     DISPLAY_REFRESH_SECONDS = 2.0
+    CALIBRATION_REFRESH_SECONDS = 2.0
 
     def __init__(self, classifier: Classifier, settings: Settings):
         self.classifier = classifier
@@ -113,6 +114,47 @@ class Tracker:
         self._last_cursor = cursor_position()
         self._last_user_move = 0.0
         self._warp_target: tuple[float, float] | None = None
+        self._calibration_mtime = self._calibration_stamp()
+        self._calibration_checked = time.monotonic()
+
+    @staticmethod
+    def _calibration_stamp() -> float:
+        try:
+            return calibration_path().stat().st_mtime
+        except OSError:
+            return 0.0
+
+    def _reset_gaze(self) -> None:
+        self._smoothed = None
+        self._candidate = None
+        self._streak = 0
+        self._stable_gaze = None
+
+    def _reload_calibration_if_changed(self) -> None:
+        """Adopt a new calibration without needing a restart.
+
+        This usually runs as a login agent, so requiring a restart after
+        recalibrating would mean quietly tracking against stale profiles - the
+        one failure that looks exactly like the tracker being bad at its job.
+        """
+        now = time.monotonic()
+        if now - self._calibration_checked < self.CALIBRATION_REFRESH_SECONDS:
+            return
+        self._calibration_checked = now
+
+        stamp = self._calibration_stamp()
+        if stamp == self._calibration_mtime:
+            return
+
+        try:
+            classifier = Classifier(Calibration.load())
+        except (OSError, ValueError, KeyError, TypeError):
+            return  # mid-write or malformed; try again on the next tick
+
+        self._calibration_mtime = stamp
+        self.classifier = classifier
+        self._reset_gaze()
+        print(f"  calibration reloaded ({len(classifier.display_ids)} displays)")
 
     def _refresh_displays(self) -> None:
         """Re-read the display list periodically.
@@ -239,6 +281,7 @@ class Tracker:
                     continue
 
                 self._refresh_displays()
+                self._reload_calibration_if_changed()
                 self._observe_cursor()
 
                 pose: Pose | None = None

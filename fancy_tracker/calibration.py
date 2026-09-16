@@ -80,7 +80,12 @@ class Calibration:
             "scale": self.scale,
             "profiles": [asdict(p) for p in self.profiles],
         }
-        path.write_text(json.dumps(payload, indent=2) + "\n")
+        # Written through a temporary file so a reader never sees half a
+        # document. The running tracker polls this path and would otherwise
+        # occasionally catch it mid-write.
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(payload, indent=2) + "\n")
+        os.replace(tmp, path)
         return path
 
     @classmethod

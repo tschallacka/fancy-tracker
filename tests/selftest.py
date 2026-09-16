@@ -246,6 +246,51 @@ def main() -> int:
     mem2.update_displays([a, b_moved, c])
     check("new display starts centred", mem2.recall(7) == (-450.0, 450.0), str(mem2.recall(7)))
 
+    print("12. recalibrating is picked up without a restart")
+    import time as _time
+
+    from fancy_tracker import calibration as cal_mod
+
+    with tempfile.TemporaryDirectory() as td:
+        original = cal_mod.state_dir
+        cal_mod.state_dir = lambda _td=td: Path(_td)
+        try:
+            first = {
+                panels[0].id: ("A", np.zeros((40, 4)) + rng.normal(0, 1.0, (40, 4))),
+                panels[1].id: ("B", np.full((40, 4), 10.0) + rng.normal(0, 1.0, (40, 4))),
+            }
+            Calibration.build(first).save()
+            t = Tracker(Classifier(Calibration.load()), Settings(dry_run=True))
+            t.displays = panels
+            t._by_id = {d.id: d for d in panels}
+            before = t.classifier
+
+            # Rewrite with a third display and force the poll.
+            second = dict(first)
+            second[4242] = ("C", np.full((40, 4), -10.0) + rng.normal(0, 1.0, (40, 4)))
+            _time.sleep(0.01)
+            Calibration.build(second).save()
+            t._calibration_checked = 0.0
+            t._reload_calibration_if_changed()
+
+            check("classifier was swapped", t.classifier is not before)
+            check(
+                "new display is known after reload",
+                4242 in t.classifier.display_ids,
+                str(sorted(t.classifier.display_ids)),
+            )
+            check("gaze state reset on reload", t._stable_gaze is None and t._streak == 0)
+
+            # A truncated file must not take down a running tracker.
+            kept = t.classifier
+            calibration_file = Path(td) / "calibration.json"
+            calibration_file.write_text('{"version": 1, "prof')
+            t._calibration_checked = 0.0
+            t._reload_calibration_if_changed()
+            check("malformed calibration is ignored", t.classifier is kept)
+        finally:
+            cal_mod.state_dir = original
+
     print()
     if failures:
         print(f"{len(failures)} FAILURES: {failures}")

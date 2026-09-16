@@ -112,7 +112,28 @@ Three things that will bite otherwise:
   denied first attempt is harmless.
 - **`nix profile upgrade` is what updates it.** The agent runs the copy in your
   profile, not your working tree, so editing the checkout changes nothing until
-  you reinstall.
+  you reinstall. Changing flags in the plist needs a `bootout` and `bootstrap`
+  too — editing the file alone does nothing.
+
+### Recalibrating while the agent is running
+
+Recalibrating is picked up on its own, within a couple of seconds, with no
+restart and no `bootout`. The tracker watches `calibration.json` and swaps
+profiles in place.
+
+Stop the agent first anyway:
+
+```sh
+launchctl bootout gui/$(id -u)/nl.tschallacka.fancy-tracker
+nix run github:tschallacka/fancy-tracker -- calibrate
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/nl.tschallacka.fancy-tracker.plist
+```
+
+Not because the reload needs it, but because a running agent moves the cursor to
+the centre of whatever monitor it thinks you are looking at — while calibration
+is trying to park that same cursor on the dot it wants you to look at. The two
+fight over it, and the cue you are supposed to follow becomes useless. They also
+share the webcam, which halves the frame rate and so the sample count.
 
 
 ## Calibrating
