@@ -30,15 +30,84 @@ by geometry.
 
 ## Setup
 
+Install Nix, if you have not already — this installer turns on flakes by
+default, which this project needs:
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install
+```
+
 Camera access has to be granted to whatever terminal you run this from:
 **System Settings → Privacy & Security → Camera**. Without it the program stops
 with `Could not open camera 0`.
 
 ```sh
-nix run .#fancy-tracker -- displays     # check the monitors are seen correctly
-nix run .#fancy-tracker -- calibrate    # roughly a minute
-nix run .#fancy-tracker -- run
+nix run github:tschallacka/fancy-tracker -- displays     # check the monitors
+nix run github:tschallacka/fancy-tracker -- calibrate    # roughly a minute
+nix run github:tschallacka/fancy-tracker -- run
 ```
+
+From a local clone, `nix run .#fancy-tracker -- …` does the same.
+
+## Running it at login
+
+Install it into your profile first, so there is a stable path for launchd to
+call and the build cannot be garbage-collected out from under it:
+
+```sh
+nix profile install github:tschallacka/fancy-tracker
+```
+
+Then write a launch agent. The path has to be absolute — launchd expands
+neither `~` nor environment variables — so let the shell fill it in:
+
+```sh
+mkdir -p ~/Library/LaunchAgents ~/Library/Logs
+cat > ~/Library/LaunchAgents/nl.tschallacka.fancy-tracker.plist <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>nl.tschallacka.fancy-tracker</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$HOME/.nix-profile/bin/fancy-tracker</string>
+    <string>run</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>30</integer>
+  <key>StandardOutPath</key><string>$HOME/Library/Logs/fancy-tracker.log</string>
+  <key>StandardErrorPath</key><string>$HOME/Library/Logs/fancy-tracker.log</string>
+</dict>
+</plist>
+PLIST
+
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/nl.tschallacka.fancy-tracker.plist
+```
+
+It starts at login from then on. To check on it, stop it, or remove it:
+
+```sh
+launchctl print gui/$(id -u)/nl.tschallacka.fancy-tracker | head -20
+tail -f ~/Library/Logs/fancy-tracker.log
+launchctl bootout gui/$(id -u)/nl.tschallacka.fancy-tracker
+```
+
+Three things that will bite otherwise:
+
+- **Calibrate before you enable the agent.** With no calibration the program
+  exits immediately, and `KeepAlive` will restart it forever. `ThrottleInterval`
+  holds that to once every 30 seconds rather than a spin, but the log will fill
+  with the same error until you calibrate.
+- **Camera permission is per-executable.** Granting it to your terminal does not
+  grant it to the launchd-started process, which macOS treats separately. It
+  should appear in **Privacy & Security → Camera** the first time the agent
+  tries; if it never does, the log will show `Could not open camera 0`.
+- **`nix profile upgrade` is what updates it.** The agent runs the copy in your
+  profile, not your working tree, so editing the checkout changes nothing until
+  you reinstall.
+
 
 ## Calibrating
 
