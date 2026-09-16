@@ -7,6 +7,7 @@ Run inside the dev shell, which supplies both the model and the fixture face:
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -22,7 +23,7 @@ from fancy_tracker.calibration import Calibration, Classifier
 from fancy_tracker.detector import FaceDetector, model_path
 from fancy_tracker.displays import Display, active_displays
 from fancy_tracker.overlay import targets_for
-from fancy_tracker.pose import estimate
+from fancy_tracker.pose import FEATURE_NAMES, estimate
 from fancy_tracker.tracker import CursorMemory, Settings, Tracker
 
 failures: list[str] = []
@@ -343,6 +344,155 @@ def main() -> int:
         "every state has a distinct name",
         len({ov.PENDING, ov.ACTIVE, ov.GOOD, ov.BAD, ov.REVISIT}) == 5,
     )
+
+    print("16. layout is recovered from where the head pointed")
+    from fancy_tracker.geometry import DisplayModel, analyse
+
+    # Two panels 1000px wide. In pixel space they adjoin at x=1000, but the
+    # synthetic poses put a 6-degree gap between them: a physical separation the
+    # OS arrangement does not model.
+    def panel_points(x0_deg, deg_per_px, w=1000, h=800, pitch0=0.0, coupling=0.0):
+        pts = []
+        for px, py in [(0, 0), (w, 0), (0, h), (w, h), (w / 2, h / 2)]:
+            yaw = x0_deg + px * deg_per_px + py * coupling
+            pitch = pitch0 + py * 0.01
+            pts.append((px, py, np.array([yaw, pitch, yaw / 100.0, pitch / 100.0])))
+        return pts
+
+    left = DisplayModel.fit(1, "left", 1000, 800, panel_points(-30.0, 0.02))
+    right = DisplayModel.fit(2, "right", 1000, 800, panel_points(-4.0, 0.02))
+    check("a plane is fitted per panel", left is not None and right is not None)
+    check("fit is near-exact on clean data", left.residual < 1e-6, f"{left.residual:.2e}")
+    check(
+        "gradient recovered (0.02 deg/px)",
+        abs(left.degrees_per_pixel[0] - 0.02) < 1e-6,
+        f"{left.degrees_per_pixel[0]:.4f}",
+    )
+
+    report = analyse([left, right])
+    gap = report["gaps"][0]
+    # left spans -30..-10, right spans -4..+16, so the gap is 6 degrees.
+    check("physical gap detected", abs(gap.gap_degrees - 6.0) < 1e-6, f"{gap.gap_degrees:.2f} deg")
+    check("gap reported as not adjoining", not gap.adjoining)
+    check(
+        "gap expressed in screen pixels",
+        abs(gap.equivalent_pixels - 300.0) < 1.0,
+        f"{gap.equivalent_pixels:.0f}px",
+    )
+
+    touching = DisplayModel.fit(3, "touching", 1000, 800, panel_points(-10.0, 0.02))
+    adj = analyse([left, touching])["gaps"][0]
+    check("adjoining panels report no gap", adj.adjoining, f"{adj.gap_degrees:.2f} deg")
+
+    print("17. axis coupling is measured, not fought")
+    coupled = DisplayModel.fit(4, "coupled", 1000, 800, panel_points(-30.0, 0.02, coupling=0.005))
+    yaw_per_y, _pitch_per_x = coupled.yaw_pitch_coupling
+    check("coupling recovered", abs(yaw_per_y - 0.005) < 1e-6, f"{yaw_per_y:.4f} deg/px")
+    # Despite the coupling, a pose from the panel still locates back onto it.
+    probe = coupled.features_at(750.0, 200.0)
+    x, y, residual = coupled.locate(probe)
+    check(
+        "a coupled pose still maps to the right spot",
+        abs(x - 750) < 1.0 and abs(y - 200) < 1.0 and residual < 1e-6,
+        f"({x:.0f},{y:.0f}) residual {residual:.2e}",
+    )
+
+    print("18. looking into a gap is not attributed to a monitor")
+    inside = left.features_at(500.0, 400.0)
+    _s, _x, _y, outside_in = left.score(inside)
+    check("a pose on the panel is not outside it", outside_in == 0.0)
+    # Middle of the gap: left spans -30..-10 deg, right spans -4..+16, so -7 deg
+    # belongs to neither. On the left panel's own scale that is x = 1150.
+    between = left.features_at(1150.0, 400.0)
+    best = min((left, right), key=lambda m: m.score(between)[0])
+    outside_gap = best.score(between)[3]
+    # 150px beyond an edge at ~0.02 deg/px, so ~3.0 - comfortably over the
+    # default --gap-tolerance of 2.0, which is what makes the jump suppressible.
+    check(
+        "a pose in the gap lands well outside whichever panel claims it",
+        outside_gap > 2.0,
+        f"outside by {outside_gap:.2f}",
+    )
+    edge = left.features_at(1000.0, 400.0)  # the panel's own edge, not the gap
+    check(
+        "the panel's own edge is not treated as a gap",
+        left.score(edge)[3] < 1e-6,
+        f"outside by {left.score(edge)[3]:.4f}",
+    )
+
+    print("19. calibration keeps per-dot data and still reads old files")
+    with tempfile.TemporaryDirectory() as td:
+        payload = {
+            d.id: (
+                d.label,
+                d.width,
+                d.height,
+                [
+                    (
+                        t.name,
+                        t.x,
+                        t.y,
+                        [np.array([i * 20.0 + t.x * 0.01, t.y * 0.01, 0.0, 0.0])] * 12,
+                    )
+                    for t in targets_for(d)
+                ],
+            )
+            for i, d in enumerate(panels)
+        }
+        full = Calibration.build_with_targets(payload)
+        p = Path(td) / "v2.json"
+        full.save(p)
+        reloaded = Calibration.load(p)
+        check("v2 round-trips with targets", len(reloaded.profiles[0].targets) == 5)
+        check("models are buildable from it", len(reloaded.models()) == 2)
+        check("classifier goes geometric", Classifier(reloaded).geometric)
+
+        # A v1 file (no targets) must still load and fall back to centroids.
+        legacy = Path(td) / "v1.json"
+        legacy.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "features": list(FEATURE_NAMES),
+                    "scale": [1.0] * 4,
+                    "profiles": [
+                        {
+                            "display_id": 9,
+                            "label": "a",
+                            "mean": [0.0] * 4,
+                            "std": [1.0] * 4,
+                            "samples": 50,
+                        },
+                        {
+                            "display_id": 8,
+                            "label": "b",
+                            "mean": [10.0] * 4,
+                            "std": [1.0] * 4,
+                            "samples": 50,
+                        },
+                    ],
+                }
+            )
+        )
+        old = Calibration.load(legacy)
+        check("v1 still loads", old.version == 1)
+        check("v1 falls back to centroids", not Classifier(old).geometric)
+
+    print("20. the recalibration prompt is only raised on a real change")
+    from fancy_tracker.prompt import describe_change
+
+    wording = describe_change(["new"], [], [])
+    check("prompt names what changed", "1 new monitor" in wording, wording.split("\n")[0])
+    t4 = Tracker(Classifier(full), Settings(dry_run=True, prompt_on_change=False))
+    t4.displays = panels
+    matches, added, removed, moved = t4._calibration_matches(panels)
+    check("unchanged layout matches", matches, f"{added} {removed} {moved}")
+    shrunk = [Display(panels[0].id, 0, 0, 640, 480, False, True), panels[1]]
+    matches2, _a, _r, moved2 = t4._calibration_matches(shrunk)
+    check("a resized monitor is spotted", not matches2 and moved2, str(moved2))
+    gone = [panels[0]]
+    matches3, _a3, removed3, _m3 = t4._calibration_matches(gone)
+    check("an unplugged monitor is spotted", not matches3 and removed3, str(removed3))
 
     print()
     if failures:

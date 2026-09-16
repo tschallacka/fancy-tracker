@@ -64,6 +64,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="jump to where the cursor last was on that monitor, instead of its centre",
     )
+    run.add_argument(
+        "--gap-tolerance",
+        type=float,
+        default=2.0,
+        help="how far off every monitor a look may land before it counts as between them",
+    )
+    run.add_argument(
+        "--no-prompt",
+        action="store_true",
+        help="do not offer a recalibration when the monitor layout changes",
+    )
     run.add_argument("--preview", action="store_true", help="show the camera window")
     run.add_argument("--dry-run", action="store_true", help="log jumps without making them")
     return parser
@@ -81,6 +92,8 @@ def settings_from(args: argparse.Namespace) -> Settings:
         cooldown=getattr(args, "cooldown", 0.6),
         mouse_grace=getattr(args, "mouse_grace", 0.5),
         stickiness=getattr(args, "stickiness", 0.5),
+        gap_tolerance=getattr(args, "gap_tolerance", 2.0),
+        prompt_on_change=not getattr(args, "no_prompt", False),
         dry_run=getattr(args, "dry_run", False),
         preview=getattr(args, "preview", False),
         recall_position=getattr(args, "recall_position", False),

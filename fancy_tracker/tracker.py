@@ -14,6 +14,7 @@ from .calibration import Calibration, Classifier, calibration_path, state_dir
 from .detector import FaceDetector
 from .displays import Display, active_displays, cursor_position, display_at, warp_cursor
 from .pose import Pose, estimate
+from .prompt import Question, describe_change
 
 
 def positions_path() -> Path:
@@ -32,6 +33,11 @@ class Settings:
     cooldown: float = 0.6  # seconds between jumps
     mouse_grace: float = 0.5  # defer a jump this long after a manual mouse move
     stickiness: float = 0.5  # head start for the display you are already on
+
+    # How far outside every monitor a gaze may land before it is treated as
+    # aimed between them - at the desk, at a gap - rather than at any of them.
+    gap_tolerance: float = 2.0
+    prompt_on_change: bool = True
     dry_run: bool = False
     preview: bool = False
 
@@ -116,6 +122,10 @@ class Tracker:
         self._warp_target: tuple[float, float] | None = None
         self._calibration_mtime = self._calibration_stamp()
         self._calibration_checked = time.monotonic()
+        self._question: Question | None = None
+        self._prompted_for: dict | None = None
+        if self.displays:
+            self._check_layout(self.displays)
 
     @staticmethod
     def _calibration_stamp() -> float:
@@ -156,6 +166,34 @@ class Tracker:
         self._reset_gaze()
         print(f"  calibration reloaded ({len(classifier.display_ids)} displays)")
 
+    def _layout_signature(self, displays: list[Display]) -> dict[int, tuple[float, float]]:
+        return {d.id: (d.width, d.height) for d in displays}
+
+    def _calibration_matches(self, displays: list[Display]) -> tuple[bool, list, list, list]:
+        """Does the saved calibration still describe these monitors?
+
+        Compared against what calibration recorded rather than against the
+        previous poll, so an arrangement changed while the tracker was not
+        running is caught too.
+        """
+        known = {p.display_id: p for p in self.classifier.calibration.profiles}
+        here = {d.id: d for d in displays}
+
+        added = [here[i].label for i in here.keys() - known.keys()]
+        removed = [known[i].label for i in known.keys() - here.keys()]
+        moved = []
+        for i in here.keys() & known.keys():
+            profile = known[i]
+            # Width and height are only recorded from calibration v2 onwards.
+            if profile.width <= 0 or profile.height <= 0:
+                continue
+            if (
+                abs(profile.width - here[i].width) > 1.0
+                or abs(profile.height - here[i].height) > 1.0
+            ):
+                moved.append(here[i].label)
+        return (not (added or removed or moved), added, removed, moved)
+
     def _refresh_displays(self) -> None:
         """Re-read the display list periodically.
 
@@ -177,6 +215,42 @@ class Tracker:
         self.displays = current
         self._by_id = {d.id: d for d in current}
         self.memory.update_displays(current)
+
+        # Asleep screens report as no displays at all; that is not a change of
+        # arrangement and must not trigger a prompt.
+        if current:
+            self._check_layout(current)
+
+    def _check_layout(self, displays: list[Display]) -> None:
+        """Offer a recalibration when the monitors no longer match the profile."""
+        matches, added, removed, moved = self._calibration_matches(displays)
+        signature = self._layout_signature(displays)
+        if matches:
+            self._prompted_for = None
+            return
+        if self._prompted_for == signature or self._question is not None:
+            return  # already asked about exactly this layout
+
+        self._prompted_for = signature
+        if self.settings.prompt_on_change:
+            print("  monitor layout changed; asking whether to recalibrate")
+            self._question = Question(describe_change(added, removed, moved))
+        else:
+            print("  monitor layout changed; calibration is stale")
+
+    def _poll_question(self) -> bool:
+        """True when the user asked for a recalibration."""
+        if self._question is None:
+            return False
+        answer = self._question.answered()
+        if answer is None:
+            return False
+        self._question = None
+        if answer:
+            print("  recalibration accepted")
+            return True
+        print("  recalibration declined")
+        return False
 
     def _observe_cursor(self) -> None:
         """Track the cursor and note whether the move was ours or the user's."""
@@ -242,6 +316,12 @@ class Tracker:
         if display is None:
             return None
 
+        # Monitors that are physically apart have a gap between them that the
+        # arrangement does not model. A gaze landing in that gap belongs to
+        # neither, so moving the cursor anywhere would be a guess.
+        placed = self.classifier.locate(self._smoothed)
+        if placed is not None and placed[3] > self.settings.gap_tolerance:
+            return None
         previous, self._stable_gaze = self._stable_gaze, gaze_id
         if previous is None:
             return None  # first lock-on only establishes where we are
@@ -264,6 +344,29 @@ class Tracker:
         self._last_cursor = cursor_position()
         return f"jumped to {self.classifier.label(gaze_id)} at {target[0]:.0f},{target[1]:.0f}"
 
+    def _recalibrate(self, cap) -> cv2.VideoCapture:
+        """Run calibration in place, then carry on tracking with the result.
+
+        The camera is handed over rather than shared: two processes reading it
+        halves the frame rate, and the tracker warping the cursor would fight
+        the dot calibration is asking you to look at.
+        """
+        from . import calibrate  # imported here; calibrate imports this module
+
+        cap.release()
+        try:
+            calibrate.run(self.settings)
+        except Exception as exc:  # noqa: BLE001 - see below
+            # Deliberately broad. Recalibration touches the camera, the window
+            # server and the filesystem; whatever it fails on, the tracker still
+            # has a working calibration loaded and should carry on with it
+            # rather than exit and be restarted in a loop by launchd.
+            print(f"  recalibration failed: {exc}")
+        self._calibration_checked = 0.0
+        self._reload_calibration_if_changed()
+        self._prompted_for = None
+        return open_camera(self.settings)
+
     def run(self) -> int:
         detector = FaceDetector(score_threshold=self.settings.min_score)
         cap = open_camera(self.settings)
@@ -282,6 +385,9 @@ class Tracker:
 
                 self._refresh_displays()
                 self._reload_calibration_if_changed()
+                if self._poll_question():
+                    cap = self._recalibrate(cap)
+                    continue
                 self._observe_cursor()
 
                 pose: Pose | None = None

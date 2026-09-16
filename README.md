@@ -212,6 +212,8 @@ which monitor it resolves to, and never touches the cursor.
 | `--cooldown` | 0.6 | seconds between jumps |
 | `--mouse-grace` | 0.5 | hold off this long after you move the mouse yourself |
 | `--stickiness` | 0.5 | head start for the monitor you are already on |
+| `--gap-tolerance` | 2.0 | how far off every monitor a look may land before it counts as *between* them |
+| `--no-prompt` | off | don't offer a recalibration when the monitors change |
 | `--min-score` | 0.6 | face-detection confidence floor |
 | `--recall-position` | off | land on the last cursor spot instead of the centre |
 
@@ -248,6 +250,54 @@ Two things work against that:
 Raise `--stickiness` if it still flips; lower it if a monitor becomes hard to
 reach. Watch the margins `--dry-run` prints: a monitor whose margins sit below
 about 1.0 is one whose profile is too close to a neighbour's.
+
+## Where it thinks your monitors are
+
+macOS's arrangement is bookkeeping, not geography. It butts panels together in
+one pixel plane whatever their real position, so two monitors with a hand's
+width of desk between them share an edge as far as the system is concerned.
+Classifying against that pretend geometry costs accuracy exactly at the seams.
+
+Calibration measures the truth instead. Five dots per monitor, each at a known
+spot with a measured head pose, are enough to fit that monitor's **gradient** —
+how far the head turns per pixel travelled — and from there to place its edges
+in angular space. Comparing one monitor's far edge against its neighbour's near
+edge then shows whether they really adjoin:
+
+```
+Inferred layout (from where your head actually pointed, not the arrangement):
+  monitor                      yaw span       pitch span     fit
+  2560x1440 @ (-2560,0)     -41.2..-18.6    -7.1.. +8.4     0.31
+  2560x1440 @ (0,0)         -16.9.. +8.2    -6.8.. +9.1     0.28
+  1440x2560 @ (2560,0)       +9.4..+22.7   -11.2..+24.6     0.44
+  1512x982  @ (4000,0)      +29.1..+41.0    +6.3..+19.8     0.35
+
+  Between neighbours:
+    2560x1440 @ (-2560,0)  -> 2560x1440 @ (0,0)    +1.7 deg  adjoining
+    2560x1440 @ (0,0)      -> 1440x2560 @ (2560,0) +1.2 deg  adjoining
+    1440x2560 @ (2560,0)   -> 1512x982 @ (4000,0)  +6.4 deg  gap, about 470px
+                                                              of screen would fill it
+```
+
+That last line is a physical gap the arrangement claims does not exist. Two
+things follow from knowing about it. A look that lands *in* the gap belongs to
+no monitor, so the cursor stays where it is rather than being sent somewhere on
+a guess — that is `--gap-tolerance`. And the monitors on either side are no
+longer forced to explain poses that fall between them, which is what made that
+pair hard to separate in the first place.
+
+The report also prints **axis coupling** — how much yaw is read when only pitch
+changed. Five-point `solvePnP` leaks one into the other, and looking up and down
+a tall portrait monitor is where it shows. The per-monitor fit is a full linear
+map rather than two independent axes, so the coupling is represented rather than
+fought.
+
+### When the monitors change
+
+If a monitor is plugged, unplugged, moved or resized, the saved calibration no
+longer describes reality. The tracker notices and asks whether to recalibrate.
+Say yes and it hands the camera over, runs calibration, and picks the result up
+without the agent needing a restart. `--no-prompt` turns the offer off.
 
 ## Development
 
