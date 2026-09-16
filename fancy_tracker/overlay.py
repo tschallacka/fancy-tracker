@@ -1,10 +1,16 @@
 """Full-screen calibration targets drawn as borderless Cocoa overlays.
 
 One transparent, click-through window per display, each showing five dots: the
-four corners and the centre. The dot being calibrated flashes; the rest stay
-dim. Sampling the corners as well as the centre matters - a 2560px-wide monitor
-subtends a wide angle from where you sit, so a profile built only from its
-centre would be far too tight to recognise a glance at its edge.
+four corners and the centre. Sampling the corners as well as the centre matters
+- a 2560px-wide monitor subtends a wide angle from where you sit, so a profile
+built only from its centre would be far too tight to recognise a glance at its
+edge.
+
+Each dot carries its own state, so the whole run is legible at a glance: the
+dot being sampled pulses yellow, a good one turns green with a tick, one whose
+samples were unusable flashes red before going back to yellow to be retried,
+and one queued for another look because it sits too close to a dot already
+recorded is ringed amber.
 
 AppKit needs its run loop pumped to redraw. Rather than hand control to
 NSApplication.run(), the capture loop calls pump() each frame, which keeps the
@@ -43,6 +49,13 @@ SCREEN_DIM = 0.72
 
 TARGET_NAMES = ("centre", "top-left", "top-right", "bottom-right", "bottom-left")
 
+# Dot states.
+PENDING = "pending"
+ACTIVE = "active"
+GOOD = "good"
+BAD = "bad"
+REVISIT = "revisit"
+
 
 @dataclass(frozen=True)
 class Target:
@@ -67,7 +80,7 @@ def targets_for(display: Display) -> list[Target]:
 
 
 class TargetView(NSView):
-    """Draws the dim backdrop, the five dots, and a caption."""
+    """Draws the dim backdrop and the five dots in their current states."""
 
     def initWithFrame_(self, frame):
         # Reassigning self is the PyObjC initialiser idiom: the superclass may
@@ -76,9 +89,8 @@ class TargetView(NSView):
         if self is None:
             return None
         self.targets = []
-        self.active_index = -1
+        self.states = []
         self.flash_on = True
-        self.caption = ""
         return self
 
     def isOpaque(self):
@@ -89,33 +101,56 @@ class TargetView(NSView):
         NSBezierPath.fillRect_(self.bounds())
 
         for i, target in enumerate(self.targets):
-            active = i == self.active_index
-            if active and not self.flash_on:
-                continue
-            if active:
-                NSColor.colorWithCalibratedRed_green_blue_alpha_(1.0, 0.85, 0.1, 1.0).set()
-                radius = DOT_RADIUS
-            else:
-                NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.18).set()
-                radius = DOT_RADIUS * 0.45
+            state = self.states[i] if i < len(self.states) else PENDING
+            if state == PENDING:
+                self._dot(target, DOT_RADIUS * 0.45, (1.0, 1.0, 1.0, 0.18))
+            elif state == GOOD:
+                self._dot(target, DOT_RADIUS * 0.8, (0.20, 0.80, 0.35, 1.0))
+                self._tick(target, DOT_RADIUS * 0.8)
+            elif state == REVISIT:
+                self._dot(target, DOT_RADIUS * 0.55, (1.0, 0.60, 0.0, 0.85))
+                self._ring(target, DOT_RADIUS * 0.55, (1.0, 0.60, 0.0, 0.9))
+            elif state == BAD:
+                # Only the flash-on half is drawn, so this reads as a blink.
+                if self.flash_on:
+                    self._dot(target, DOT_RADIUS, (0.95, 0.20, 0.20, 1.0))
+                    self._ring(target, DOT_RADIUS, (1.0, 0.45, 0.45, 0.9))
+            elif state == ACTIVE and self.flash_on:
+                self._dot(target, DOT_RADIUS, (1.0, 0.85, 0.10, 1.0))
+                self._ring(target, DOT_RADIUS, (1.0, 1.0, 1.0, 0.9))
 
-            path = NSBezierPath.bezierPathWithOvalInRect_(
-                NSMakeRect(target.x - radius, target.y - radius, radius * 2, radius * 2)
-            )
-            path.fill()
+    # PyObjC turns every method on an NSView subclass into an ObjC selector, and
+    # derives the expected argument count from the name. These helpers are plain
+    # Python and have to say so, or the class fails to build.
+    @objc.python_method
+    def _dot(self, target, radius, rgba):
+        NSColor.colorWithCalibratedRed_green_blue_alpha_(*rgba).set()
+        NSBezierPath.bezierPathWithOvalInRect_(
+            NSMakeRect(target.x - radius, target.y - radius, radius * 2, radius * 2)
+        ).fill()
 
-            if active:
-                NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.9).set()
-                ring = NSBezierPath.bezierPathWithOvalInRect_(
-                    NSMakeRect(
-                        target.x - radius * 1.8,
-                        target.y - radius * 1.8,
-                        radius * 3.6,
-                        radius * 3.6,
-                    )
-                )
-                ring.setLineWidth_(3.0)
-                ring.stroke()
+    @objc.python_method
+    def _ring(self, target, radius, rgba):
+        NSColor.colorWithCalibratedRed_green_blue_alpha_(*rgba).set()
+        outer = radius * 1.8
+        path = NSBezierPath.bezierPathWithOvalInRect_(
+            NSMakeRect(target.x - outer, target.y - outer, outer * 2, outer * 2)
+        )
+        path.setLineWidth_(3.0)
+        path.stroke()
+
+    @objc.python_method
+    def _tick(self, target, radius):
+        """A check mark inside the dot. Cocoa's y axis points up."""
+        NSColor.colorWithCalibratedWhite_alpha_(1.0, 1.0).set()
+        path = NSBezierPath.bezierPath()
+        path.setLineWidth_(max(3.0, radius * 0.26))
+        path.setLineCapStyle_(1)  # round
+        path.setLineJoinStyle_(1)
+        path.moveToPoint_((target.x - radius * 0.42, target.y + radius * 0.05))
+        path.lineToPoint_((target.x - radius * 0.12, target.y - radius * 0.30))
+        path.lineToPoint_((target.x + radius * 0.45, target.y + radius * 0.38))
+        path.stroke()
 
 
 class CalibrationOverlay:
@@ -164,27 +199,45 @@ class CalibrationOverlay:
             view = TargetView.alloc().initWithFrame_(
                 NSMakeRect(0, 0, frame.size.width, frame.size.height)
             )
-            view.targets = targets_for(display)
+            targets = targets_for(display)
+            view.targets = targets
+            view.states = [PENDING] * len(targets)
             window.setContentView_(view)
             window.orderFrontRegardless()
 
             self._windows[display.id] = (window, view)
-            self.targets[display.id] = view.targets
+            self.targets[display.id] = targets
 
         self.pump()
 
-    def show_target(self, display_id: int, index: int) -> None:
-        """Light the given dot on one display, dim every other display."""
+    def state(self, display_id: int, index: int) -> str:
+        _window, view = self._windows[display_id]
+        return view.states[index]
+
+    def set_state(self, display_id: int, index: int, state: str) -> None:
+        entry = self._windows.get(display_id)
+        if entry is None:
+            return
+        _window, view = entry
+        view.states[index] = state
+        view.setNeedsDisplay_(True)
+        self.pump()
+
+    def set_active(self, display_id: int, index: int) -> None:
+        """Make one dot the active one, leaving every finished dot as it is."""
         for did, (_window, view) in self._windows.items():
-            view.active_index = index if did == display_id else -1
+            for i, state in enumerate(view.states):
+                if state in (ACTIVE, BAD) and not (did == display_id and i == index):
+                    view.states[i] = PENDING
+            if did == display_id:
+                view.states[index] = ACTIVE
             view.setNeedsDisplay_(True)
         self.pump()
 
     def set_flash(self, on: bool) -> None:
         for _window, view in self._windows.values():
-            if view.active_index >= 0:
-                view.flash_on = on
-                view.setNeedsDisplay_(True)
+            view.flash_on = on
+            view.setNeedsDisplay_(True)
         self.pump()
 
     def pump(self, seconds: float = 0.005) -> None:

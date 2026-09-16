@@ -146,6 +146,30 @@ All five points feed one profile per monitor, on purpose. A 2560px-wide monitor
 covers a wide angle from where you sit, so a profile built only from its centre
 would not recognise a glance at its far edge.
 
+Each dot tells you how it went as soon as it is taken:
+
+| dot | meaning |
+| --- | --- |
+| small grey | not taken yet |
+| yellow, pulsing, white ring | being sampled right now |
+| **green with a tick** | good — steady aim, enough frames |
+| **red, flashing** | unusable; it goes straight back to yellow to be retaken |
+| **amber ring** | queued for a retake, because it sits too close to a dot already recorded on another monitor |
+
+A dot is unusable if too few frames found your face — you looked far enough
+away that the camera lost you — or if your aim wandered more than about six
+degrees while it was solid. Either way it is simply taken again, up to three
+times.
+
+The amber case is the interesting one. If a dot ends up looking almost
+identical to one already recorded on a *different* monitor, the boundary
+between those two monitors is unclear, and the earlier dot is queued to be
+taken again at the end of the pass. Often the first take was just sloppy and
+the retake separates them. Sometimes it does not, because the two really are at
+the same angle from where you sit — two monitors that share a physical edge are
+the usual culprit. The separation table printed at the end is what tells you
+which case you are in.
+
 Calibration ends by printing how far apart the monitors landed, in units of the
 noise within a single monitor:
 

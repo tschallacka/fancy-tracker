@@ -291,6 +291,59 @@ def main() -> int:
         finally:
             cal_mod.state_dir = original
 
+    print("13. per-target verdicts")
+    from fancy_tracker.calibrate import (
+        INSUFFICIENT,
+        OK,
+        UNSTEADY,
+        assess,
+        find_conflict,
+    )
+
+    steady = [np.array([10.0, 2.0, 0.1, 0.5]) + rng.normal(0, 0.4, 4) for _ in range(30)]
+    check("steady samples pass", assess(steady)[0] == OK, assess(steady)[1])
+    check("too few frames is insufficient", assess(steady[:4])[0] == INSUFFICIENT)
+    wobbly = [np.array([10.0, 2.0, 0.1, 0.5]) + rng.normal(0, 12.0, 4) for _ in range(30)]
+    check("a wandering aim is unsteady", assess(wobbly)[0] == UNSTEADY, assess(wobbly)[1])
+
+    print("14. unclear edges between displays are found, within one are not")
+
+    def cloud(centre, n=30, sd=0.5):
+        return [np.asarray(centre, float) + rng.normal(0, sd, 4) for _ in range(n)]
+
+    # (display_id, target_index). Display 1's dots are spread out; display 2 has
+    # one dot sitting right on top of one of display 1's.
+    coll = {
+        (1, 0): cloud([0, 0, 0, 0]),
+        (1, 1): cloud([20, 0, 0, 0]),
+        (1, 2): cloud([40, 0, 0, 0]),
+        (2, 0): cloud([200, 0, 0, 0]),
+    }
+    check(
+        "a well-separated target reports no conflict",
+        find_conflict((2, 0), coll) is None,
+        str(find_conflict((2, 0), coll)),
+    )
+    coll[(2, 1)] = cloud([40.2, 0, 0, 0])  # all but on top of (1, 2)
+    check(
+        "an overlapping target on another display is caught",
+        find_conflict((2, 1), coll) == (1, 2),
+        str(find_conflict((2, 1), coll)),
+    )
+    check(
+        "neighbours on the same display are not a conflict",
+        find_conflict((1, 1), coll) is None,
+        str(find_conflict((1, 1), coll)),
+    )
+
+    print("15. overlay dot states")
+    from fancy_tracker import overlay as ov
+
+    check(
+        "every state has a distinct name",
+        len({ov.PENDING, ov.ACTIVE, ov.GOOD, ov.BAD, ov.REVISIT}) == 5,
+    )
+
     print()
     if failures:
         print(f"{len(failures)} FAILURES: {failures}")
