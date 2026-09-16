@@ -41,6 +41,10 @@ def build_parser() -> argparse.ArgumentParser:
     diag = sub.add_parser("diag", help="live pose readout; never moves the cursor")
     _camera_args(diag)
 
+    tune = sub.add_parser("check", help="can the current settings actually reach every monitor?")
+    tune.add_argument("--stickiness", type=float, default=0.35)
+    tune.add_argument("--margin", type=float, default=0.35)
+
     run = sub.add_parser("run", help="track and move the cursor")
     _camera_args(run)
     run.add_argument("--dwell", type=int, default=6, help="agreeing frames before a gaze counts")
@@ -165,6 +169,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "displays":
             return cmd_displays()
+        if args.command == "check":
+            from .tuning import describe, transitions
+
+            moves = transitions(Calibration.load(), margin=args.margin)
+            print(describe(moves, args.stickiness))
+            return 0
 
         settings = settings_from(args)
         if args.command == "calibrate":

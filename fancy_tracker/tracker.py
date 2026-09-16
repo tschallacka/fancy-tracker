@@ -32,7 +32,11 @@ class Settings:
     margin: float = 0.35  # required lead over the runner-up display
     cooldown: float = 0.6  # seconds between jumps
     mouse_grace: float = 0.5  # defer a jump this long after a manual mouse move
-    stickiness: float = 0.5  # head start for the display you are already on
+    # Head start for the display you are already on. Kept modest because a
+    # value that steadies a well-separated pair can make a tight pair
+    # unreachable, and that failure is silent - `fancy-tracker check` measures
+    # how much room each move actually has.
+    stickiness: float = 0.35
 
     # How far outside every monitor a gaze may land before it is treated as
     # aimed between them - at the desk, at a gap - rather than at any of them.
@@ -379,10 +383,35 @@ class Tracker:
         self._prompted_for = None
         return open_camera(self.settings)
 
+    def _warn_if_unreachable(self) -> None:
+        """Say so when the settings make a monitor impossible to reach.
+
+        Nothing errors when stickiness is too high for a pair; the cursor just
+        does not follow, and only between those two monitors. Left to be noticed
+        in use, it reads as the tracking being unreliable rather than as a
+        setting being wrong.
+        """
+        from .tuning import recommend, transitions
+
+        try:
+            moves = transitions(self.classifier.calibration, margin=self.settings.margin)
+        except (ValueError, KeyError):
+            return
+        blocked = [m for m in moves if m.blocked_at(self.settings.stickiness)]
+        if not blocked:
+            return
+        print(f"  warning: --stickiness {self.settings.stickiness} blocks {len(blocked)} move(s):")
+        for m in blocked[:4]:
+            print(
+                f"    {m.src_label[:24]} -> {m.dst_label[:24]} (room for {m.usable_stickiness:.2f})"
+            )
+        print(f"    try --stickiness {recommend(moves)}, or run `fancy-tracker check`")
+
     def run(self) -> int:
         detector = FaceDetector(score_threshold=self.settings.min_score)
         cap = open_camera(self.settings)
         paused = False
+        self._warn_if_unreachable()
         print(
             "tracking - ctrl-c to stop"
             + (" ('p' pauses in the preview window)" if self.settings.preview else "")

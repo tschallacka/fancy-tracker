@@ -735,6 +735,59 @@ def main() -> int:
         jump_with(outside=0.0, nearest=0.0) is not None,
     )
 
+    print("24. stickiness that makes a monitor unreachable is detected")
+    from fancy_tracker.tuning import Transition, recommend, transitions
+    from fancy_tracker.tuning import describe as tuning_describe
+
+    # Two pairs with very different room: steep/tidy are close together, and a
+    # third monitor sits far from both. A single stickiness cannot serve both
+    # unless it is chosen for the tighter pair, which is the trap.
+    far_dots = [(n, x, y, m + np.array([60.0, 0.0, 0.0, 0.0])) for n, x, y, m in tidy_dots]
+    spread_cal = Calibration.build_with_targets(
+        {
+            1: as_payload(1, "steep", steep_dots),
+            2: as_payload(2, "tidy", tidy_dots),
+            3: as_payload(3, "far", far_dots),
+        }
+    )
+    moves = transitions(spread_cal, margin=0.35)
+    check("a move is measured in both directions for every pair", len(moves) == 6, str(len(moves)))
+
+    rooms = {(m.src_label, m.dst_label): m.usable_stickiness for m in moves}
+    tightest = min(rooms.values())
+    loosest = max(rooms.values())
+    check(
+        "pairs differ a lot in how much room they have",
+        loosest > tightest * 2,
+        f"tightest {tightest:.2f}, loosest {loosest:.2f}",
+    )
+
+    too_much = loosest - 0.01  # fine for the easy pair, fatal for the tight one
+    blocked = [m for m in moves if m.blocked_at(too_much)]
+    check(
+        "a stickiness tuned for the easy pair blocks the tight one",
+        blocked,
+        f"{len(blocked)} move(s) blocked at {too_much:.2f}",
+    )
+    check(
+        "the recommendation leaves every move usable",
+        not [m for m in moves if m.blocked_at(recommend(moves))],
+        f"recommends {recommend(moves)}",
+    )
+    text = tuning_describe(moves, too_much)
+    check("the report names the blocked moves", "BLOCKED" in text)
+    check("and suggests a value", "Try --stickiness" in text)
+
+    # A pair that is impossible at any setting must not drag the recommendation
+    # to zero and throw away the steadiness the other pairs can afford.
+    impossible = [*moves, Transition("a", "b", "corner", lead=0.10, margin=0.35)]
+    check(
+        "an impossible pair does not veto the recommendation",
+        recommend(impossible) == recommend(moves),
+        f"{recommend(impossible)} vs {recommend(moves)}",
+    )
+    check("an impossible pair is still reported as blocked", impossible[-1].blocked_at(0.0))
+
     print()
     if failures:
         print(f"{len(failures)} FAILURES: {failures}")
