@@ -55,8 +55,10 @@ Install it into your profile first, so there is a stable path for launchd to
 call and the build cannot be garbage-collected out from under it:
 
 ```sh
-nix profile install github:tschallacka/fancy-tracker
+nix profile add github:tschallacka/fancy-tracker
 ```
+
+On Nix older than 2.28 that subcommand is still called `nix profile install`.
 
 Then write a launch agent. The path has to be absolute — launchd expands
 neither `~` nor environment variables — so let the shell fill it in:
