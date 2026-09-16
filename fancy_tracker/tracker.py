@@ -1,0 +1,308 @@
+"""The run loop: remember a cursor position per display, jump on a gaze change."""
+
+from __future__ import annotations
+
+import json
+import time
+from dataclasses import dataclass
+from pathlib import Path
+
+import cv2
+import numpy as np
+
+from .calibration import Classifier, state_dir
+from .detector import FaceDetector
+from .displays import Display, active_displays, cursor_position, display_at, warp_cursor
+from .pose import Pose, estimate
+
+
+def positions_path() -> Path:
+    return state_dir() / "positions.json"
+
+
+@dataclass
+class Settings:
+    camera: int = 0
+    width: int = 640
+    height: int = 480
+    min_score: float = 0.6
+    smoothing: float = 0.35  # EMA weight on each new sample
+    dwell: int = 6  # consecutive agreeing frames before a gaze counts
+    margin: float = 0.35  # required lead over the runner-up display
+    cooldown: float = 0.6  # seconds between jumps
+    mouse_grace: float = 0.5  # defer a jump this long after a manual mouse move
+    stickiness: float = 0.5  # head start for the display you are already on
+    dry_run: bool = False
+    preview: bool = False
+
+    # Jump to the middle of the display rather than to wherever the cursor was
+    # left. A fixed landing spot is far easier to find again than a moving one.
+    recall_position: bool = False
+
+    # Calibration pacing. A slow blink is easier to follow to a new corner than
+    # a fast one, and the settle time has to cover actually turning your head.
+    blink_hz: float = 2.0
+    settle_seconds: float = 1.8
+    sample_seconds: float = 1.5
+
+
+class CursorMemory:
+    """Last known cursor position per display, persisted between runs."""
+
+    def __init__(self, displays: list[Display]):
+        self._pos: dict[int, tuple[float, float]] = {d.id: d.center for d in displays}
+        self._displays = {d.id: d for d in displays}
+        self._load()
+
+    def _load(self) -> None:
+        path = positions_path()
+        if not path.is_file():
+            return
+        try:
+            saved = json.loads(path.read_text())
+        except (OSError, ValueError):
+            return
+        for key, value in saved.items():
+            did = int(key)
+            display = self._displays.get(did)
+            # A display may have moved or been unplugged since; clamp it back in.
+            if display and isinstance(value, list) and len(value) == 2:
+                self._pos[did] = display.clamp(float(value[0]), float(value[1]))
+
+    def save(self) -> None:
+        path = positions_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({str(k): list(v) for k, v in self._pos.items()}, indent=2) + "\n"
+        )
+
+    def update_displays(self, displays: list[Display]) -> None:
+        """Adopt a new display layout, keeping any position still on-screen."""
+        self._displays = {d.id: d for d in displays}
+        for d in displays:
+            if d.id in self._pos:
+                self._pos[d.id] = d.clamp(*self._pos[d.id])
+            else:
+                self._pos[d.id] = d.center
+
+    def remember(self, display_id: int, x: float, y: float) -> None:
+        self._pos[display_id] = (x, y)
+
+    def recall(self, display_id: int) -> tuple[float, float]:
+        if display_id in self._pos:
+            return self._pos[display_id]
+        return self._displays[display_id].center
+
+
+class Tracker:
+    DISPLAY_REFRESH_SECONDS = 2.0
+
+    def __init__(self, classifier: Classifier, settings: Settings):
+        self.classifier = classifier
+        self.settings = settings
+        self.displays = active_displays()
+        self.memory = CursorMemory(self.displays)
+        self._by_id = {d.id: d for d in self.displays}
+        self._displays_checked = time.monotonic()
+
+        self._smoothed: np.ndarray | None = None
+        self._candidate: int | None = None
+        self._streak = 0
+        self._stable_gaze: int | None = None
+        self._last_jump = 0.0
+        self._last_cursor = cursor_position()
+        self._last_user_move = 0.0
+        self._warp_target: tuple[float, float] | None = None
+
+    def _refresh_displays(self) -> None:
+        """Re-read the display list periodically.
+
+        macOS reports zero active displays while the screens are asleep, and the
+        arrangement can change under a running tracker when a monitor is
+        plugged, unplugged or moved. Enumerating once at startup would leave the
+        tracker aiming at a layout that no longer exists - or, if it started
+        while the screens were asleep, at no layout at all.
+        """
+        now = time.monotonic()
+        if now - self._displays_checked < self.DISPLAY_REFRESH_SECONDS:
+            return
+        self._displays_checked = now
+
+        current = active_displays()
+        if [d.id for d in current] == [d.id for d in self.displays]:
+            return
+
+        self.displays = current
+        self._by_id = {d.id: d for d in current}
+        self.memory.update_displays(current)
+
+    def _observe_cursor(self) -> None:
+        """Track the cursor and note whether the move was ours or the user's."""
+        pos = cursor_position()
+        if pos != self._last_cursor:
+            moved_by_us = (
+                self._warp_target is not None
+                and abs(pos[0] - self._warp_target[0]) < 2.0
+                and abs(pos[1] - self._warp_target[1]) < 2.0
+            )
+            if not moved_by_us:
+                self._last_user_move = time.monotonic()
+            self._last_cursor = pos
+
+        here = display_at(self.displays, *pos)
+        if here is not None:
+            self.memory.remember(here.id, *pos)
+
+    def _update_gaze(self, features: np.ndarray) -> tuple[int, float]:
+        if self._smoothed is None:
+            self._smoothed = features.copy()
+        else:
+            a = self.settings.smoothing
+            self._smoothed = a * features + (1.0 - a) * self._smoothed
+
+        distances = self.classifier.distances(self._smoothed)
+
+        # The display you are already on gets a head start, so leaving it costs
+        # more than arriving did. Without this the two closest displays trade
+        # places whenever the pose sits near the boundary between them, which
+        # shows up in the logs as A -> B -> A -> B at margins barely over the
+        # threshold.
+        if self._stable_gaze in distances:
+            distances[self._stable_gaze] -= self.settings.stickiness
+
+        ranked = sorted(distances.items(), key=lambda kv: kv[1])
+        display_id, best = ranked[0]
+        margin = (ranked[1][1] - best) if len(ranked) > 1 else float("inf")
+
+        if display_id == self._candidate and margin >= self.settings.margin:
+            self._streak += 1
+        else:
+            self._candidate = display_id
+            self._streak = 1 if margin >= self.settings.margin else 0
+        return display_id, float(margin)
+
+    def _maybe_jump(self, gaze_id: int) -> str | None:
+        """Jump if the gaze has newly settled on a different display."""
+        if self._streak < self.settings.dwell:
+            return None
+        if gaze_id == self._stable_gaze:
+            return None
+
+        now = time.monotonic()
+        if now - self._last_jump < self.settings.cooldown:
+            return None
+        if now - self._last_user_move < self.settings.mouse_grace:
+            return None  # the user is working the mouse; do not fight them
+
+        # A calibrated display can be unplugged while running, and there is
+        # nowhere to jump to on a display that is not there.
+        display = self._by_id.get(gaze_id)
+        if display is None:
+            return None
+
+        previous, self._stable_gaze = self._stable_gaze, gaze_id
+        if previous is None:
+            return None  # first lock-on only establishes where we are
+
+        # The centre is the default because it is the only spot that is the same
+        # every time: you already know where to look before the cursor arrives.
+        # Restoring the last position makes the cursor harder to reacquire, which
+        # is the whole problem this is meant to solve.
+        target = self.memory.recall(gaze_id) if self.settings.recall_position else display.center
+
+        # Charge the cooldown either way, so a dry run reports exactly the jumps
+        # a real run would make rather than a more permissive superset of them.
+        self._last_jump = now
+
+        if self.settings.dry_run:
+            return f"would jump {self.classifier.label(gaze_id)} -> {target[0]:.0f},{target[1]:.0f}"
+
+        warp_cursor(*target)
+        self._warp_target = target
+        self._last_cursor = cursor_position()
+        return f"jumped to {self.classifier.label(gaze_id)} at {target[0]:.0f},{target[1]:.0f}"
+
+    def run(self) -> int:
+        detector = FaceDetector(score_threshold=self.settings.min_score)
+        cap = open_camera(self.settings)
+        paused = False
+        print(
+            "tracking - ctrl-c to stop"
+            + (" ('p' pauses in the preview window)" if self.settings.preview else "")
+        )
+
+        try:
+            while True:
+                ok, frame = cap.read()
+                if not ok or frame is None:
+                    time.sleep(0.05)
+                    continue
+
+                self._refresh_displays()
+                self._observe_cursor()
+
+                pose: Pose | None = None
+                detection = detector.detect(frame)
+                if detection is not None:
+                    pose = estimate(detection.landmarks, frame.shape[1], frame.shape[0])
+
+                note = None
+                if pose is not None and not paused:
+                    gaze_id, margin = self._update_gaze(pose.features)
+                    note = self._maybe_jump(gaze_id)
+                    if note:
+                        print(f"  {note}  (margin {margin:.2f})")
+
+                if self.settings.preview:
+                    key = show_preview(frame, detection, pose, self, paused)
+                    if key == ord("q"):
+                        break
+                    if key == ord("p"):
+                        paused = not paused
+                        print("  paused" if paused else "  resumed")
+        except KeyboardInterrupt:
+            print("\nstopping")
+        finally:
+            cap.release()
+            if self.settings.preview:
+                cv2.destroyAllWindows()
+            if self.settings.recall_position:
+                self.memory.save()
+        return 0
+
+
+def open_camera(settings: Settings) -> cv2.VideoCapture:
+    cap = cv2.VideoCapture(settings.camera)
+    if not cap.isOpened():
+        raise RuntimeError(
+            f"Could not open camera {settings.camera}. On macOS the terminal running "
+            "this needs Camera permission: System Settings > Privacy & Security > Camera."
+        )
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, settings.width)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, settings.height)
+    return cap
+
+
+def show_preview(frame, detection, pose, tracker: Tracker, paused: bool) -> int:
+    view = frame.copy()
+    if detection is not None:
+        x, y, w, h = (int(v) for v in detection.box)
+        cv2.rectangle(view, (x, y), (x + w, y + h), (0, 200, 0), 2)
+        for px, py in detection.landmarks.astype(int):
+            cv2.circle(view, (int(px), int(py)), 2, (0, 160, 255), -1)
+
+    lines = []
+    if pose is not None:
+        lines.append(f"yaw {pose.yaw:+6.1f}  pitch {pose.pitch:+6.1f}")
+    else:
+        lines.append("no face")
+    if tracker._stable_gaze is not None:
+        lines.append(tracker.classifier.label(tracker._stable_gaze))
+    lines.append(f"streak {tracker._streak}" + ("  PAUSED" if paused else ""))
+
+    for i, text in enumerate(lines):
+        cv2.putText(
+            view, text, (8, 20 + 20 * i), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1
+        )
+    cv2.imshow("fancy-tracker", view)
+    return cv2.waitKey(1) & 0xFF
