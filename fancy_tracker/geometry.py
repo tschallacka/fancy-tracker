@@ -33,6 +33,9 @@ MIN_POINTS = 4
 # they are treated as physically apart rather than adjoining.
 GAP_DEGREES = 2.0
 
+# Fit error above which a monitor's own numbers should be read with suspicion.
+HIGH_RESIDUAL = 1.5
+
 
 @dataclass
 class DisplayModel:
@@ -166,11 +169,22 @@ class Neighbours:
     left: DisplayModel
     right: DisplayModel
     gap_degrees: float
-    equivalent_pixels: float
+    # The gap as a multiple of the narrower neighbour's own apparent width.
+    # Pixels are not comparable between monitors - a small dense laptop panel
+    # and a large 27-inch one disagree about what a pixel is worth by a factor
+    # of two or more - but "twice as wide as the laptop looks from here" means
+    # the same thing whatever the panel.
+    relative_width: float
+    narrower: str
 
     @property
     def adjoining(self) -> bool:
-        return self.gap_degrees < GAP_DEGREES
+        return abs(self.gap_degrees) < GAP_DEGREES
+
+    @property
+    def overlapping(self) -> bool:
+        """Physically impossible, so a sign the fit is off rather than a finding."""
+        return self.gap_degrees <= -GAP_DEGREES
 
 
 def analyse(models: list[DisplayModel]) -> dict:
@@ -180,11 +194,12 @@ def analyse(models: list[DisplayModel]) -> dict:
     gaps: list[Neighbours] = []
     for left, right in itertools.pairwise(ordered):
         gap = right.edges()["yaw_min"] - left.edges()["yaw_max"]
-        # Express the gap in the neighbouring panels' own terms, since degrees
-        # alone mean little without knowing how big a panel looks from here.
-        per_pixel = np.mean([left.degrees_per_pixel[0], right.degrees_per_pixel[0]])
-        equivalent = float(gap / per_pixel) if per_pixel > 1e-9 else 0.0
-        gaps.append(Neighbours(left, right, float(gap), equivalent))
+        left_span = left.edges()["yaw_max"] - left.edges()["yaw_min"]
+        right_span = right.edges()["yaw_max"] - right.edges()["yaw_min"]
+        narrower_span = min(left_span, right_span)
+        narrower = left.label if left_span <= right_span else right.label
+        relative = float(gap / narrower_span) if narrower_span > 1e-9 else 0.0
+        gaps.append(Neighbours(left, right, float(gap), relative, narrower))
 
     tops = {m.display_id: m.edges()["pitch_top"] for m in ordered}
     spread = (max(tops.values()) - min(tops.values())) if tops else 0.0
@@ -199,22 +214,35 @@ def describe(models: list[DisplayModel]) -> str:
 
     report = analyse(models)
     lines = ["\nInferred layout (from where your head actually pointed, not the arrangement):"]
+    lines.append("  Everything is in degrees. Pixels are not comparable between monitors -")
+    lines.append("  a dense laptop panel and a 27-inch one disagree about what a pixel is worth.")
+    lines.append("")
     lines.append(f"  {'monitor':26s} {'yaw span':>16} {'pitch span':>16} {'fit':>7}")
     for m in report["ordered"]:
         e = m.edges()
+        flag = "  <-- rough" if m.residual > HIGH_RESIDUAL else ""
         lines.append(
             f"  {m.label[:24]:26s} "
             f"{e['yaw_min']:+6.1f}..{e['yaw_max']:+6.1f}  "
             f"{e['pitch_top']:+6.1f}..{e['pitch_bottom']:+6.1f}  "
-            f"{m.residual:6.2f}"
+            f"{m.residual:6.2f}{flag}"
+        )
+    if any(m.residual > HIGH_RESIDUAL for m in report["ordered"]):
+        lines.append(
+            "  A rough fit means the dots on that monitor did not lie on one plane as"
+            "\n  cleanly as the others - read its numbers below with that in mind."
         )
 
     lines.append("\n  Between neighbours:")
     for n in report["gaps"]:
-        if n.adjoining:
+        if n.overlapping:
+            # Two monitors cannot occupy the same angle, so this is the model
+            # failing, not a discovery. Saying "adjoining" would hide that.
+            verdict = "OVERLAP - impossible, so this pair's fit is off"
+        elif n.adjoining:
             verdict = "adjoining"
         else:
-            verdict = f"gap, about {abs(n.equivalent_pixels):.0f}px of screen would fill it"
+            verdict = f"gap, about {n.relative_width:.1f}x the width of {n.narrower[:18]}"
         lines.append(
             f"    {n.left.label[:20]:22s} -> {n.right.label[:20]:22s} "
             f"{n.gap_degrees:+5.1f} deg  {verdict}"
@@ -225,12 +253,20 @@ def describe(models: list[DisplayModel]) -> str:
         lines.append(f"    {m.label[:24]:26s} {m.edges()['pitch_top']:+6.1f} deg")
     if report["top_spread"] < 3.0:
         lines.append("    -> all aligned within 3 degrees")
+    else:
+        lines.append(
+            f"    -> spread over {report['top_spread']:.1f} degrees. If you know they are"
+            "\n       level, that is the vertical measurement being unreliable rather than"
+            "\n       the monitors: reading up and down a panel is mostly eye movement,"
+            "\n       and only the head is visible to a camera."
+        )
 
-    lines.append("\n  Axis coupling (yaw per vertical pixel - zero would be ideal):")
+    lines.append("\n  Axis coupling (yaw wrongly read across a panel's full height):")
     for m in report["ordered"]:
         yaw_per_y, pitch_per_x = m.yaw_pitch_coupling
         lines.append(
-            f"    {m.label[:24]:26s} {yaw_per_y * 1000:+6.2f} deg/1000px vertical"
-            f"   (pitch per horizontal: {pitch_per_x * 1000:+.2f})"
+            f"    {m.label[:24]:26s} {yaw_per_y * m.height:+6.1f} deg top-to-bottom"
+            f"   (pitch across its width: {pitch_per_x * m.width:+.1f} deg)"
         )
+    lines.append("    Zero would be ideal; what is here is absorbed by the fit.")
     return "\n".join(lines)

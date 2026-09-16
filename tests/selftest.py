@@ -351,7 +351,7 @@ def main() -> int:
     )
 
     print("16. layout is recovered from where the head pointed")
-    from fancy_tracker.geometry import DisplayModel, analyse
+    from fancy_tracker.geometry import DisplayModel, analyse, describe
 
     # Two panels 1000px wide. In pixel space they adjoin at x=1000, but the
     # synthetic poses put a 6-degree gap between them: a physical separation the
@@ -379,15 +379,29 @@ def main() -> int:
     # left spans -30..-10, right spans -4..+16, so the gap is 6 degrees.
     check("physical gap detected", abs(gap.gap_degrees - 6.0) < 1e-6, f"{gap.gap_degrees:.2f} deg")
     check("gap reported as not adjoining", not gap.adjoining)
+    # Both panels span 20 degrees, so a 6-degree gap is 0.3x their width. Stated
+    # this way it is comparable between monitors; pixels are not, since a dense
+    # laptop panel and a 27-inch one disagree about what a pixel is worth.
     check(
-        "gap expressed in screen pixels",
-        abs(gap.equivalent_pixels - 300.0) < 1.0,
-        f"{gap.equivalent_pixels:.0f}px",
+        "gap expressed against the narrower neighbour's own width",
+        abs(gap.relative_width - 0.3) < 0.01,
+        f"{gap.relative_width:.2f}x",
     )
+    check("no pixel figure is offered", not hasattr(gap, "equivalent_pixels"))
 
     touching = DisplayModel.fit(3, "touching", 1000, 800, panel_points(-10.0, 0.02))
     adj = analyse([left, touching])["gaps"][0]
     check("adjoining panels report no gap", adj.adjoining, f"{adj.gap_degrees:.2f} deg")
+
+    # A pair that overlaps in angle is physically impossible, so it has to be
+    # reported as a bad fit rather than quietly rounded to "adjoining".
+    overlapped = DisplayModel.fit(5, "overlapped", 1000, 800, panel_points(-22.0, 0.02))
+    bad = analyse([left, overlapped])["gaps"][0]
+    check("an impossible overlap is flagged", bad.overlapping, f"{bad.gap_degrees:.1f} deg")
+    check("an overlap is not called adjoining", not bad.adjoining)
+    text = describe([left, overlapped])
+    check("the report says so in words", "OVERLAP" in text)
+    check("the report offers no pixel figure", "px" not in text, text[:0])
 
     print("17. axis coupling is measured, not fought")
     coupled = DisplayModel.fit(4, "coupled", 1000, 800, panel_points(-30.0, 0.02, coupling=0.005))
