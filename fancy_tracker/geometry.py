@@ -256,9 +256,11 @@ def describe(models: list[DisplayModel]) -> str:
     else:
         lines.append(
             f"    -> spread over {report['top_spread']:.1f} degrees. If you know they are"
-            "\n       level, that is the vertical measurement being unreliable rather than"
-            "\n       the monitors: reading up and down a panel is mostly eye movement,"
-            "\n       and only the head is visible to a camera."
+            "\n       level, trust yourself over this figure. You sweep a panel mostly with"
+            "\n       your eyes and only partly with your head, so measured spans come out"
+            "\n       compressed - often around half - and the gaps between them inflate to"
+            "\n       match. It is a limit of watching the head, not a fault to be tuned"
+            "\n       out, and it does not affect which monitor you are judged to be facing."
         )
 
     lines.append("\n  Axis coupling (yaw wrongly read across a panel's full height):")

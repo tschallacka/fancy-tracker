@@ -286,6 +286,21 @@ a guess — that is `--gap-tolerance`. And the monitors on either side are no
 longer forced to explain poses that fall between them, which is what made that
 pair hard to separate in the first place.
 
+The angles it recovers are compressed, typically to about half of true, because
+you sweep a panel mostly with your eyes and only partly with your head. Panels
+therefore come out narrower than they are and the gaps between them wider. The
+comparative findings still hold — which monitors adjoin, and where a real gap
+is — but it is not a tape measure.
+
+Eyes would close that gap and are deliberately not used. Past roughly 45° of
+head turn the far iris is occluded by the nose and brow, and on a wide desk the
+outer monitors sit well past that: measured on a four-monitor arrangement, the
+leftmost was viewed at 67° of turn, near profile. Glasses make it worse again,
+with frames occluding the iris, lenses refracting its apparent position, and
+coatings throwing highlights back at the sensor. None of this affects which
+monitor you are judged to be facing, which only needs angles that differ from
+each other, not angles that are true.
+
 The report also prints **axis coupling** — how much yaw is read when only pitch
 changed. Five-point `solvePnP` leaks one into the other, and looking up and down
 a tall portrait monitor is where it shows. The per-monitor fit is a full linear
