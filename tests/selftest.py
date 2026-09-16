@@ -140,6 +140,10 @@ def main() -> int:
     ]
 
     def tracker_on(panels_, settings):
+        # Never let a test put a dialog on a real screen. Constructing a Tracker
+        # no longer prompts, but these classifiers describe synthetic panels that
+        # will never match the real monitors, so say so explicitly too.
+        settings.prompt_on_change = False
         t = Tracker(clf_panels, settings)
         t.displays = panels_
         t._by_id = {d.id: d for d in panels_}
@@ -493,6 +497,57 @@ def main() -> int:
     gone = [panels[0]]
     matches3, _a3, removed3, _m3 = t4._calibration_matches(gone)
     check("an unplugged monitor is spotted", not matches3 and removed3, str(removed3))
+
+    print("21. constructing a Tracker never puts a dialog on screen")
+    import fancy_tracker.tracker as tracker_mod
+
+    raised: list[str] = []
+
+    class SpyQuestion:
+        def __init__(self, message, **_kw):
+            raised.append(message)
+            self._answer: bool | None = None
+
+        def answered(self):
+            return self._answer
+
+        def cancel(self):
+            pass
+
+    original_question = tracker_mod.Question
+    tracker_mod.Question = SpyQuestion
+    try:
+        # A classifier describing panels that are not the real monitors. Before,
+        # this alone raised a dialog; a constructor must not.
+        t5 = Tracker(Classifier(full), Settings(dry_run=True, prompt_on_change=True))
+        check("no dialog raised by the constructor", raised == [], str(raised))
+
+        # It is raised on the first loop pass instead, and only once per layout.
+        t5.displays = panels
+        t5._check_layout([Display(4242, 0, 0, 900, 900, False, True)])
+        check("dialog raised on a genuine mismatch", len(raised) == 1, str(len(raised)))
+        t5._check_layout([Display(4242, 0, 0, 900, 900, False, True)])
+        check("not raised again for the same layout", len(raised) == 1, str(len(raised)))
+
+        # Answering yes is what run() acts on.
+        check("pending question reports nothing yet", t5._poll_question() is False)
+        t5._question._answer = True
+        check("confirming asks for a recalibration", t5._poll_question() is True)
+        check("question is cleared after answering", t5._question is None)
+
+        # Answering no must not trigger one.
+        t5._prompted_for = None
+        t5._check_layout([Display(4242, 0, 0, 900, 900, False, True)])
+        t5._question._answer = False
+        check("declining does not recalibrate", t5._poll_question() is False)
+
+        # And --no-prompt stays silent.
+        before = len(raised)
+        t6 = Tracker(Classifier(full), Settings(dry_run=True, prompt_on_change=False))
+        t6._check_layout([Display(4242, 0, 0, 900, 900, False, True)])
+        check("--no-prompt raises nothing", len(raised) == before, str(len(raised)))
+    finally:
+        tracker_mod.Question = original_question
 
     print()
     if failures:

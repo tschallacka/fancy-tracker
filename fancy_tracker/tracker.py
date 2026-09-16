@@ -124,8 +124,10 @@ class Tracker:
         self._calibration_checked = time.monotonic()
         self._question: Question | None = None
         self._prompted_for: dict | None = None
-        if self.displays:
-            self._check_layout(self.displays)
+        # The first layout check belongs to run(), not here. Constructing a
+        # Tracker must not put a dialog on screen: it is done in tests, and a
+        # constructor that raises UI is a side effect nobody asked for.
+        self._layout_checked = False
 
     @staticmethod
     def _calibration_stamp() -> float:
@@ -382,6 +384,10 @@ class Tracker:
                 if not ok or frame is None:
                     time.sleep(0.05)
                     continue
+
+                if not self._layout_checked and self.displays:
+                    self._layout_checked = True
+                    self._check_layout(self.displays)
 
                 self._refresh_displays()
                 self._reload_calibration_if_changed()
