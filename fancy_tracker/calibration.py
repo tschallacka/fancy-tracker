@@ -234,6 +234,18 @@ class Classifier:
         models = calibration.models()
         self._models = {m.display_id: m for m in models} if len(models) == len(self._ids) else {}
 
+        # The dots as measured, kept alongside the fitted surface. A plane
+        # through five points is a good description of a monitor viewed
+        # near-on, and a poor one at a steep angle, where the pose features go
+        # nonlinear and the fit misses its own corners. Measured points do not
+        # have that failure mode, so a monitor is credited when either its
+        # surface or one of its own dots explains the pose.
+        self._dots = {
+            p.display_id: np.asarray([t.mean for t in p.targets], dtype=np.float64)
+            for p in calibration.profiles
+            if p.targets
+        }
+
     @property
     def geometric(self) -> bool:
         return bool(self._models)
@@ -248,10 +260,30 @@ class Classifier:
     def model_list(self) -> list[DisplayModel]:
         return list(self._models.values())
 
+    def dot_distance(self, display_id: int, features: np.ndarray) -> float:
+        """Distance to the nearest dot actually measured on this monitor."""
+        dots = self._dots.get(display_id)
+        if dots is None or len(dots) == 0:
+            return float("inf")
+        return float(np.min(np.linalg.norm((dots - features) * self._weights, axis=1)))
+
+    def nearest_dot_distance(self, features: np.ndarray) -> float:
+        """Distance to the nearest dot on any monitor."""
+        if not self._dots:
+            return float("inf")
+        return min(self.dot_distance(did, features) for did in self._dots)
+
     def distances(self, features: np.ndarray) -> dict[int, float]:
         if self._models:
+            # Whichever of the two descriptions fits better. Taking the better
+            # of them is what stops a monitor with a poor surface fit from
+            # losing its own corners to a neighbour with a tidier one.
             return {
-                did: model.score(features, self._weights)[0] for did, model in self._models.items()
+                did: min(
+                    model.score(features, self._weights)[0],
+                    self.dot_distance(did, features),
+                )
+                for did, model in self._models.items()
             }
         d = np.linalg.norm((self._centroids - features) / self._scales, axis=1)
         return {display_id: float(dist) for display_id, dist in zip(self._ids, d)}

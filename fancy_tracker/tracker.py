@@ -321,8 +321,18 @@ class Tracker:
         # Monitors that are physically apart have a gap between them that the
         # arrangement does not model. A gaze landing in that gap belongs to
         # neither, so moving the cursor anywhere would be a guess.
+        #
+        # Both tests have to agree before a look is dismissed as aimed between
+        # monitors. The surface fit alone is not enough: on a monitor viewed at
+        # a steep angle the fitted plane can miss its own corners by more than
+        # this tolerance, and suppressing there means never being able to look
+        # at that corner at all.
         placed = self.classifier.locate(self._smoothed)
-        if placed is not None and placed[3] > self.settings.gap_tolerance:
+        if (
+            placed is not None
+            and placed[3] > self.settings.gap_tolerance
+            and self.classifier.nearest_dot_distance(self._smoothed) > self.settings.gap_tolerance
+        ):
             return None
         previous, self._stable_gaze = self._stable_gaze, gaze_id
         if previous is None:

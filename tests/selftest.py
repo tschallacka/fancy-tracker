@@ -649,6 +649,92 @@ def main() -> int:
     finally:
         cal_mod.estimate = real_estimate
 
+    print("23. a monitor keeps its own corners even when its surface fit is poor")
+    # A monitor viewed at a steep angle: its dots do not lie on one plane, so
+    # the fitted surface misses its own corners and a neighbour with a tidier
+    # fit can claim them. Observed on a real four-monitor desk, where the
+    # leftmost panel (67 degrees of head turn) lost two of its five dots.
+    steep_dots = [
+        ("centre", 500.0, 400.0, np.array([-67.0, 18.0, 1.5, 0.3])),
+        ("top-left", 100.0, 700.0, np.array([-79.0, 8.0, 1.9, 0.1])),
+        ("top-right", 900.0, 700.0, np.array([-60.0, 10.0, 1.2, 0.1])),
+        # These two bend away from the plane the other three define.
+        ("bottom-right", 900.0, 100.0, np.array([-57.0, 26.0, 1.0, 0.5])),
+        ("bottom-left", 100.0, 100.0, np.array([-72.0, 27.0, 1.8, 0.5])),
+    ]
+    tidy_dots = [
+        ("centre", 500.0, 400.0, np.array([-48.0, 9.0, 0.7, 0.15])),
+        ("top-left", 100.0, 700.0, np.array([-60.0, 6.0, 0.9, 0.1])),
+        ("top-right", 900.0, 700.0, np.array([-36.0, 6.0, 0.5, 0.1])),
+        ("bottom-right", 900.0, 100.0, np.array([-36.0, 12.0, 0.5, 0.2])),
+        ("bottom-left", 100.0, 100.0, np.array([-60.0, 12.0, 0.9, 0.2])),
+    ]
+
+    def as_payload(did, label, dots):
+        return (label, 1000.0, 800.0, [(n, x, y, [m] * 12) for n, x, y, m in dots])
+
+    steep_cal = Calibration.build_with_targets(
+        {
+            1: as_payload(1, "steep", steep_dots),
+            2: as_payload(2, "tidy", tidy_dots),
+        }
+    )
+    steep_clf = Classifier(steep_cal)
+    check("this calibration is geometric", steep_clf.geometric)
+
+    misplaced = []
+    for p in steep_cal.profiles:
+        for t in p.targets:
+            if steep_clf.classify(np.asarray(t.mean))[0] != p.display_id:
+                misplaced.append(f"{p.label}/{t.name}")
+    check("every measured dot lands on its own monitor", not misplaced, ", ".join(misplaced))
+
+    # A pose can land well outside a monitor's fitted surface and still be a
+    # real look at that monitor, when the surface is the thing that is wrong.
+    # Suppressing there makes that corner unreachable - which is exactly what
+    # happened to the top-left of the steeply-viewed monitor on a real desk.
+    class StubClassifier:
+        """Reports a pose far outside every surface, but right on a measured dot."""
+
+        def __init__(self, outside, nearest):
+            self.outside, self.nearest = outside, nearest
+            self.calibration = steep_cal
+
+        def locate(self, _f):
+            return (panels[1].id, 0.0, 0.0, self.outside)
+
+        def nearest_dot_distance(self, _f):
+            return self.nearest
+
+        def label(self, did):
+            return str(did)
+
+    def jump_with(outside, nearest):
+        t = Tracker(steep_clf, Settings(dry_run=True, prompt_on_change=False, gap_tolerance=2.0))
+        t.displays = panels
+        t._by_id = {d.id: d for d in panels}
+        t.memory = CursorMemory(panels)
+        t._streak = 10_000
+        t._stable_gaze = panels[0].id
+        t._smoothed = np.zeros(4)
+        t.classifier = StubClassifier(outside, nearest)
+        return t._maybe_jump(panels[1].id)
+
+    check(
+        "a look into a real gap is suppressed",
+        jump_with(outside=5.0, nearest=5.0) is None,
+        "far from every surface and every measured dot",
+    )
+    check(
+        "a look off a bad surface but on a measured dot still jumps",
+        jump_with(outside=5.0, nearest=0.0) is not None,
+        "this is the unreachable-corner regression",
+    )
+    check(
+        "a look on the surface jumps",
+        jump_with(outside=0.0, nearest=0.0) is not None,
+    )
+
     print()
     if failures:
         print(f"{len(failures)} FAILURES: {failures}")
