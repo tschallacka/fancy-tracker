@@ -102,10 +102,14 @@ Three things that will bite otherwise:
   exits immediately, and `KeepAlive` will restart it forever. `ThrottleInterval`
   holds that to once every 30 seconds rather than a spin, but the log will fill
   with the same error until you calibrate.
-- **Camera permission is per-executable.** Granting it to your terminal does not
-  grant it to the launchd-started process, which macOS treats separately. It
-  should appear in **Privacy & Security → Camera** the first time the agent
-  tries; if it never does, the log will show `Could not open camera 0`.
+- **The first launch will fail, and that is expected.** Camera permission is not
+  inherited from the terminal you granted it to; the agent asks for its own, and
+  the log shows `Could not open camera 0` while the prompt is still sitting
+  there. Click allow, and `KeepAlive` picks it up on the next retry — which is
+  what `ThrottleInterval` is really for. Confirm with
+  `launchctl print gui/$(id -u)/nl.tschallacka.fancy-tracker | grep -E 'state|pid'`;
+  you want `state = running`, and a `last exit code = 1` left over from the
+  denied first attempt is harmless.
 - **`nix profile upgrade` is what updates it.** The agent runs the copy in your
   profile, not your working tree, so editing the checkout changes nothing until
   you reinstall.
