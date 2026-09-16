@@ -788,62 +788,65 @@ def main() -> int:
     )
     check("an impossible pair is still reported as blocked", impossible[-1].blocked_at(0.0))
 
-    print("25. the enlarged cursor is drawn the right way up")
-    from AppKit import NSCursor, NSMakeRect
+    print("25. the arrival burst is visible on any desktop")
+    import random as _random
 
-    from fancy_tracker.emphasis import CursorEmphasis, EmphasisView, cg_to_cocoa
+    from AppKit import NSMakeRect
 
-    system_cursor = NSCursor.currentSystemCursor()
-    if system_cursor is None or system_cursor.image() is None:
-        check("no system cursor available to test", True, "skipped")
-    else:
+    from fancy_tracker.emphasis import BASE_RADIUS, CursorEmphasis, SparkView, build_sparks
+    from fancy_tracker.emphasis import cg_to_cocoa as to_cocoa
 
-        def opaque_centroid(scale):
-            """Row/column centre of mass of what gets drawn, in bitmap pixels."""
-            side = 240
-            view = EmphasisView.alloc().initWithFrame_(NSMakeRect(0, 0, side, side))
-            view.image = system_cursor.image()
-            hs = system_cursor.hotSpot()
-            view.hotspot = (float(hs.x), float(hs.y))
-            view.scale, view.halo = scale, 0.0  # halo off; the cursor is the subject
-            rep = view.bitmapImageRepForCachingDisplayInRect_(view.bounds())
-            view.cacheDisplayInRect_toBitmapImageRep_(view.bounds(), rep)
+    burst_scale = 4.0
+    sparks = build_sparks(burst_scale, _random.Random(3))
+    check("a burst has sparks and embers", len(sparks) > 40, f"{len(sparks)} sparks")
 
-            rows, cols, n = 0.0, 0.0, 0
-            step = 4
-            for py in range(0, rep.pixelsHigh(), step):
-                for px in range(0, rep.pixelsWide(), step):
-                    if rep.colorAtX_y_(px, py).alphaComponent() > 0.35:
-                        rows += py
-                        cols += px
-                        n += 1
-            return (rows / n, cols / n, n) if n else (0.0, 0.0, 0)
+    # Sparks that all travel the same distance land on one circle and read as a
+    # clock face rather than an explosion. Spread is the whole effect.
+    speeds = [np.hypot(s.vx, s.vy) for s in sparks]
+    spread = float(np.std(speeds) / np.mean(speeds))
+    check("their speeds vary widely", spread > 0.35, f"relative spread {spread:.2f}")
+    births = {round(s.born, 2) for s in sparks}
+    check("they do not all appear at once", len(births) > 8, f"{len(births)} distinct start times")
 
-        small_row, small_col, small_n = opaque_centroid(1.0)
-        big_row, big_col, big_n = opaque_centroid(4.0)
-        check("the cursor is actually drawn", small_n > 0 and big_n > 0, f"{small_n} / {big_n} px")
-        check("scaling it draws more of it", big_n > small_n * 4, f"{small_n} -> {big_n} px")
+    side = int(max(360.0, BASE_RADIUS * burst_scale * 2.9))
+    view = SparkView.alloc().initWithFrame_(NSMakeRect(0, 0, side, side))
+    view.sparks = sparks
+    view.ring_scale = BASE_RADIUS * burst_scale
 
-        # The hotspot is the arrow's tip and sits at the top-left of the
-        # artwork, so the body extends down and to the right of the point it
-        # marks. Enlarging must therefore push the centre of mass down-right.
-        # Drawn upside down - the bug this catches - it would move up instead.
-        check(
-            "enlarging extends the cursor downwards, not upwards",
-            big_row > small_row,
-            f"centre of mass row {small_row:.0f} -> {big_row:.0f} (bitmap rows count down)",
-        )
-        check(
-            "and to the right",
-            big_col > small_col,
-            f"column {small_col:.0f} -> {big_col:.0f}",
-        )
+    def rendered(progress):
+        view.progress = progress
+        rep = view.bitmapImageRepForCachingDisplayInRect_(view.bounds())
+        view.cacheDisplayInRect_toBitmapImageRep_(view.bounds(), rep)
+        bright = dark = drawn = 0
+        for py in range(0, rep.pixelsHigh(), 5):
+            for px in range(0, rep.pixelsWide(), 5):
+                c = rep.colorAtX_y_(px, py)
+                if c.alphaComponent() <= 0.25:
+                    continue
+                drawn += 1
+                lum = 0.30 * c.redComponent() + 0.59 * c.greenComponent() + 0.11 * c.blueComponent()
+                bright += lum > 0.45
+                dark += lum < 0.22
+        return drawn, bright, dark
 
-    print("26. the swell runs and then gets out of the way")
-    main_bounds = active_displays()
-    if main_bounds:
-        m = next((d for d in main_bounds if d.main), main_bounds[0])
-        _cx, cocoa_y = cg_to_cocoa(m.x, m.y)
+    drawn, bright, dark = rendered(0.30)
+    check("something is actually drawn", drawn > 40, f"{drawn} sampled pixels")
+    # Every bright mark is laid over a darker one of its own. That pairing is
+    # what makes it survive a light desktop: an earlier version composited with
+    # PlusLighter, which adds light and so vanished on anything pale.
+    check("it draws bright marks", bright > 5, f"{bright} bright")
+    check("and dark ones beneath them", dark > 5, f"{dark} dark")
+
+    early = rendered(0.05)[0]
+    late = rendered(0.95)[0]
+    check(
+        "it starts small and fades out", early < drawn and late < drawn, f"{early} {drawn} {late}"
+    )
+
+    print("26. the burst runs and then gets out of the way")
+    if live:
+        m = next((d for d in live if d.main), live[0])
+        _cx, cocoa_y = to_cocoa(m.x, m.y)
         check(
             "the top of the main display maps to its own height",
             abs(cocoa_y - m.height) < 1.0,

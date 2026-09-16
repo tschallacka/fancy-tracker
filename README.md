@@ -207,20 +207,28 @@ which monitor it resolves to, and never touches the cursor.
 ### Finding the cursor after it moves
 
 A cursor that teleports is harder to follow than one that was dragged, and on a
-busy background it can be lost entirely. So on arrival it swells to about the
-size a shake gives it, holds for an instant, then settles back — the same
-vocabulary macOS already uses for shake-to-locate, so it needs no explaining.
+busy background it can be lost entirely. So arriving sets off a burst of sparks
+centred on the landing point: the eye is drawn to motion, and motion that
+converges on a point says *where* to look rather than merely that something
+happened.
 
 ```sh
-fancy-tracker flash            # preview it where the cursor is, no camera needed
+fancy-tracker flash                          # preview it, no camera needed
+fancy-tracker flash --emphasis-scale 7       # bigger
+fancy-tracker flash --emphasis-seconds 2     # slower
 ```
+
+Two details are load-bearing rather than decorative. Every bright mark is laid
+over a darker one of its own, because additive blending is invisible on a pale
+desktop and this has to work on both. And the sparks' speeds vary widely — when
+they all travel the same distance they land on one circle and the whole thing
+reads as a clock face rather than an explosion.
 
 It is drawn, not applied. The system's own pointer magnification is the
 `mouseDriverCursorSize` accessibility preference, which is global and
 persistent: a crash midway through would leave the cursor stuck large and that
-setting quietly changed. This is a click-through window borrowing the current
-cursor's own artwork, so if the process dies the window goes with it and nothing
-is left behind. `--emphasis-seconds 0` turns it off.
+setting quietly changed. A click-through window leaves nothing behind if the
+process dies. `--emphasis-seconds 0` turns it off.
 
 | flag | default | what it does |
 | --- | --- | --- |
