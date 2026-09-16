@@ -43,7 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     flash = sub.add_parser("flash", help="preview the cursor swell where the cursor is")
     flash.add_argument("--emphasis-seconds", type=float, default=1.1)
-    flash.add_argument("--emphasis-scale", type=float, default=4.0)
+    flash.add_argument("--emphasis-scale", type=float, default=2.0)
 
     tune = sub.add_parser("check", help="can the current settings actually reach every monitor?")
     tune.add_argument("--stickiness", type=float, default=0.35)
@@ -89,7 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=1.1,
         help="how long the cursor swells on arrival; 0 turns it off",
     )
-    run.add_argument("--emphasis-scale", type=float, default=4.0, help="how large it swells to")
+    run.add_argument("--emphasis-scale", type=float, default=2.0, help="how far the sparks reach")
     run.add_argument("--preview", action="store_true", help="show the camera window")
     run.add_argument("--dry-run", action="store_true", help="log jumps without making them")
     return parser
@@ -113,7 +113,7 @@ def settings_from(args: argparse.Namespace) -> Settings:
         preview=getattr(args, "preview", False),
         recall_position=getattr(args, "recall_position", False),
         emphasis_seconds=getattr(args, "emphasis_seconds", 1.1),
-        emphasis_scale=getattr(args, "emphasis_scale", 4.0),
+        emphasis_scale=getattr(args, "emphasis_scale", 2.0),
         blink_hz=getattr(args, "blink_hz", 2.0),
         settle_seconds=getattr(args, "settle", 1.8),
         sample_seconds=getattr(args, "sample", 1.5),

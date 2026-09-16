@@ -250,7 +250,7 @@ def build_sparks(scale: float, rng: random.Random) -> list[Spark]:
 class CursorEmphasis:
     """A one-shot burst at a point, advanced by tick() from the caller's loop."""
 
-    def __init__(self, seconds: float = 0.9, scale: float = 4.0):
+    def __init__(self, seconds: float = 0.9, scale: float = 2.0):
         self.seconds = seconds
         self.scale = scale
         self.canvas = max(360.0, BASE_RADIUS * scale * 2.9)

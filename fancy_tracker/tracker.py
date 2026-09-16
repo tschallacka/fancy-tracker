@@ -53,7 +53,7 @@ class Settings:
     # A cursor that teleports is easy to lose, so it swells on arrival the way
     # a shaken one does, then settles back.
     emphasis_seconds: float = 1.1
-    emphasis_scale: float = 4.0
+    emphasis_scale: float = 2.0
 
     # Calibration pacing. A slow blink is easier to follow to a new corner than
     # a fast one, and the settle time has to cover actually turning your head.

@@ -240,7 +240,7 @@ process dies. `--emphasis-seconds 0` turns it off.
 | `--stickiness` | 0.5 | head start for the monitor you are already on |
 | `--gap-tolerance` | 2.0 | how far off every monitor a look may land before it counts as *between* them |
 | `--emphasis-seconds` | 1.1 | how long the cursor swells on arrival; `0` turns it off |
-| `--emphasis-scale` | 4.0 | how large it swells to |
+| `--emphasis-scale` | 2.0 | how far the sparks reach |
 | `--no-prompt` | off | don't offer a recalibration when the monitors change |
 | `--min-score` | 0.6 | face-detection confidence floor |
 | `--recall-position` | off | land on the last cursor spot instead of the centre |
