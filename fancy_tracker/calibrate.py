@@ -40,11 +40,17 @@ MIN_SAMPLES_PER_DISPLAY = 20
 # samples are treated as a smeared aim rather than a steady look.
 MAX_JITTER_DEG = 6.0
 
-# Stillness gate. The head counts as settled when this many recent frames stay
-# within this many degrees of each other.
-STILL_FRAMES = 6
-STILL_DEGREES = 3.0
+# Stillness gate. Settled means the window's two halves agree to within this
+# many degrees - drift, not spread, because landmark noise alone moves a still
+# head by a couple of degrees and a spread test would never pass.
+STILL_FRAMES = 8
+STILL_DEGREES = 2.5
 STILL_TIMEOUT = 4.0
+
+# The window must also cover this much wall-clock time. Without it the test is
+# frame-rate dependent: on a fast capture, eight frames can span a few
+# milliseconds, over which any movement looks like no movement at all.
+STILL_WINDOW_SECONDS = 0.35
 
 # Scaled distance below which two targets on different displays are too alike to
 # tell apart. Roughly "within the noise of a single target".
@@ -289,18 +295,31 @@ def _await_stillness(overlay: CalibrationOverlay, cap, detector, settings) -> No
     """Pulse the dot until the head stops moving, then stop pulsing.
 
     A fixed settle time has to be guessed, and a guess long enough for a swing
-    across four monitors is tedious everywhere else. Waiting for the movement to
-    actually stop is both quicker and more reliable - it was the cause of every
-    'aim wandered' retry on the first monitor of a run.
+    across four monitors is tedious everywhere else.
+
+    Two things this has to get right. It must not measure the stillness of a
+    head that has not started moving yet: when a new dot lights up you are still
+    parked perfectly still on the previous one, and a naive gate opens
+    immediately and then samples straight through the movement. So nothing
+    counts until a minimum settling period has passed. And it tests for drift
+    between the halves of the window rather than spread across it, because
+    landmark noise alone moves a motionless head a couple of degrees and a
+    spread test would simply never pass.
     """
-    deadline = time.monotonic() + max(settings.settle_seconds, STILL_TIMEOUT)
+    start = time.monotonic()
+    min_wait = max(0.0, settings.settle_seconds)
+    deadline = start + min_wait + STILL_TIMEOUT
     period = 1.0 / (max(settings.blink_hz, 0.25) * 2.0)
-    recent: deque = deque(maxlen=STILL_FRAMES)
+    # Held by time rather than by frame count: eight frames is a quarter second
+    # at 30fps but a blink at 200, and the question is about seconds either way.
+    recent: deque = deque(maxlen=1024)
     on = True
     next_toggle = 0.0
 
-    while time.monotonic() < deadline:
+    while True:
         now = time.monotonic()
+        if now >= deadline:
+            break
         if now >= next_toggle:
             overlay.set_flash(on)
             on = not on
@@ -317,14 +336,40 @@ def _await_stillness(overlay: CalibrationOverlay, cap, detector, settings) -> No
         pose = estimate(detection.landmarks, frame.shape[1], frame.shape[0])
         if pose is None:
             continue
-        recent.append(pose.features[:2])
 
-        if len(recent) == STILL_FRAMES:
-            spread = np.ptp(np.asarray(recent), axis=0)
-            if float(spread.max()) < STILL_DEGREES:
-                break
+        if now - start < min_wait:
+            # Still on the way to the dot; anything measured here is the old aim.
+            recent.clear()
+            continue
+
+        recent.append((now, pose.features[:2]))
+        while recent and now - recent[0][0] > STILL_WINDOW_SECONDS:
+            recent.popleft()
+        if _settled(recent):
+            break
 
     overlay.set_flash(True)
+
+
+def _settled(window) -> bool:
+    """True when the aim has stopped drifting over a long enough stretch.
+
+    Entries are (timestamp, [yaw, pitch]). Both conditions matter: the window
+    has to cover real time, and its two halves have to agree. Drift rather than
+    spread, because landmark noise alone moves a motionless head a couple of
+    degrees.
+    """
+    if len(window) < STILL_FRAMES:
+        return False
+    times = [t for t, _f in window]
+    # A little under the full window, so an ordinary frame-rate jitter does not
+    # keep pushing the decision out.
+    if times[-1] - times[0] < STILL_WINDOW_SECONDS * 0.6:
+        return False
+    arr = np.asarray([f for _t, f in window])
+    half = len(arr) // 2
+    drift = np.abs(arr[:half].mean(axis=0) - arr[half:].mean(axis=0))
+    return bool(drift.max() < STILL_DEGREES)
 
 
 def _flash_bad(overlay: CalibrationOverlay, cap, display_id: int, index: int) -> None:

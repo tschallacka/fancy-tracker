@@ -11,6 +11,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import cv2
@@ -548,6 +549,91 @@ def main() -> int:
         check("--no-prompt raises nothing", len(raised) == before, str(len(raised)))
     finally:
         tracker_mod.Question = original_question
+
+    print("22. the stillness gate waits for movement before judging stillness")
+    from fancy_tracker.calibrate import _await_stillness, _settled
+
+    def window(values, span=1.0):
+        return [(i * span / max(len(values) - 1, 1), np.asarray(v)) for i, v in enumerate(values)]
+
+    check("drift between halves is caught", not _settled(window([[0, 0]] * 4 + [[9, 0]] * 4)))
+    check("pure noise is not mistaken for drift", _settled(window([[0, 0], [2, 1], [-2, -1]] * 3)))
+    check(
+        "a window spanning no real time is never settled",
+        not _settled(window([[0, 0]] * 8, span=0.001)),
+        "eight frames in a millisecond say nothing about stillness",
+    )
+
+    class FakePose:
+        def __init__(self, yaw):
+            self.features = np.array([yaw, 0.0, 0.0, 0.0])
+
+    SWING_START, SWING_END = 0.20, 0.60
+
+    class FakeRig:
+        """A head parked on the old dot, then swinging, then settling.
+
+        Driven by the clock rather than a frame count, so the timings under test
+        are the ones that actually matter.
+        """
+
+        def __init__(self):
+            self.t0 = time.monotonic()
+            self.frames = 0
+
+        def read(self):
+            self.frames += 1
+            time.sleep(0.005)  # a camera delivers frames, it does not spin
+            return True, np.zeros((4, 4, 3), np.uint8)
+
+        def detect(self, _frame):
+            return self  # stands in for a Detection
+
+        @property
+        def landmarks(self):
+            return np.zeros((5, 2), np.float32)
+
+        def yaw_now(self):
+            elapsed = time.monotonic() - self.t0
+            if elapsed < SWING_START:
+                return 0.0  # still parked on the previous dot
+            if elapsed < SWING_END:
+                return (elapsed - SWING_START) / (SWING_END - SWING_START) * 50.0
+            return 50.0
+
+    rig = FakeRig()
+
+    class FakeOverlay:
+        def set_flash(self, _on):
+            pass
+
+        def pump(self, _s=0.0):
+            pass
+
+    import fancy_tracker.calibrate as cal_mod
+
+    real_estimate = cal_mod.estimate
+    cal_mod.estimate = lambda _lm, _w, _h: FakePose(rig.yaw_now())
+    try:
+        settings_fast = Settings(settle_seconds=0.25)
+        t0 = time.monotonic()
+        _await_stillness(FakeOverlay(), rig, rig, settings_fast)
+        waited = time.monotonic() - t0
+        # The old gate returned at ~0.0s, latching onto the stillness of a head
+        # that had not started moving, and then sampled through the swing.
+        check(
+            "it does not open during the pre-movement stillness",
+            waited >= settings_fast.settle_seconds,
+            f"waited {waited:.2f}s, minimum {settings_fast.settle_seconds}s",
+        )
+        check(
+            "it waits out the whole swing",
+            waited > SWING_END,
+            f"waited {waited:.2f}s, swing ended at {SWING_END}s",
+        )
+        check("it settles rather than timing out", waited < 4.0, f"{waited:.2f}s")
+    finally:
+        cal_mod.estimate = real_estimate
 
     print()
     if failures:
