@@ -788,6 +788,80 @@ def main() -> int:
     )
     check("an impossible pair is still reported as blocked", impossible[-1].blocked_at(0.0))
 
+    print("25. the enlarged cursor is drawn the right way up")
+    from AppKit import NSCursor, NSMakeRect
+
+    from fancy_tracker.emphasis import CursorEmphasis, EmphasisView, cg_to_cocoa
+
+    system_cursor = NSCursor.currentSystemCursor()
+    if system_cursor is None or system_cursor.image() is None:
+        check("no system cursor available to test", True, "skipped")
+    else:
+
+        def opaque_centroid(scale):
+            """Row/column centre of mass of what gets drawn, in bitmap pixels."""
+            side = 240
+            view = EmphasisView.alloc().initWithFrame_(NSMakeRect(0, 0, side, side))
+            view.image = system_cursor.image()
+            hs = system_cursor.hotSpot()
+            view.hotspot = (float(hs.x), float(hs.y))
+            view.scale, view.halo = scale, 0.0  # halo off; the cursor is the subject
+            rep = view.bitmapImageRepForCachingDisplayInRect_(view.bounds())
+            view.cacheDisplayInRect_toBitmapImageRep_(view.bounds(), rep)
+
+            rows, cols, n = 0.0, 0.0, 0
+            step = 4
+            for py in range(0, rep.pixelsHigh(), step):
+                for px in range(0, rep.pixelsWide(), step):
+                    if rep.colorAtX_y_(px, py).alphaComponent() > 0.35:
+                        rows += py
+                        cols += px
+                        n += 1
+            return (rows / n, cols / n, n) if n else (0.0, 0.0, 0)
+
+        small_row, small_col, small_n = opaque_centroid(1.0)
+        big_row, big_col, big_n = opaque_centroid(4.0)
+        check("the cursor is actually drawn", small_n > 0 and big_n > 0, f"{small_n} / {big_n} px")
+        check("scaling it draws more of it", big_n > small_n * 4, f"{small_n} -> {big_n} px")
+
+        # The hotspot is the arrow's tip and sits at the top-left of the
+        # artwork, so the body extends down and to the right of the point it
+        # marks. Enlarging must therefore push the centre of mass down-right.
+        # Drawn upside down - the bug this catches - it would move up instead.
+        check(
+            "enlarging extends the cursor downwards, not upwards",
+            big_row > small_row,
+            f"centre of mass row {small_row:.0f} -> {big_row:.0f} (bitmap rows count down)",
+        )
+        check(
+            "and to the right",
+            big_col > small_col,
+            f"column {small_col:.0f} -> {big_col:.0f}",
+        )
+
+    print("26. the swell runs and then gets out of the way")
+    main_bounds = active_displays()
+    if main_bounds:
+        m = next((d for d in main_bounds if d.main), main_bounds[0])
+        _cx, cocoa_y = cg_to_cocoa(m.x, m.y)
+        check(
+            "the top of the main display maps to its own height",
+            abs(cocoa_y - m.height) < 1.0,
+            f"cg y={m.y:.0f} -> cocoa y={cocoa_y:.0f}, height {m.height:.0f}",
+        )
+
+    em = CursorEmphasis(seconds=0.12, scale=3.0)
+    check("nothing is running before it is shown", em.tick() is False)
+    em.show(400.0, 300.0)
+    ran = em.tick()
+    time.sleep(0.2)
+    check("it finishes on its own", em.tick() is False, f"was running: {ran}")
+    em.close()
+
+    disabled = CursorEmphasis(seconds=0.0)
+    disabled.show(400.0, 300.0)
+    check("zero seconds means it never appears", disabled.tick() is False)
+
     print()
     if failures:
         print(f"{len(failures)} FAILURES: {failures}")

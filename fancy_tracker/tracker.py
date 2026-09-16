@@ -13,6 +13,7 @@ import numpy as np
 from .calibration import Calibration, Classifier, calibration_path, state_dir
 from .detector import FaceDetector
 from .displays import Display, active_displays, cursor_position, display_at, warp_cursor
+from .emphasis import CursorEmphasis
 from .pose import Pose, estimate
 from .prompt import Question, describe_change
 
@@ -48,6 +49,11 @@ class Settings:
     # Jump to the middle of the display rather than to wherever the cursor was
     # left. A fixed landing spot is far easier to find again than a moving one.
     recall_position: bool = False
+
+    # A cursor that teleports is easy to lose, so it swells on arrival the way
+    # a shaken one does, then settles back.
+    emphasis_seconds: float = 1.1
+    emphasis_scale: float = 4.0
 
     # Calibration pacing. A slow blink is easier to follow to a new corner than
     # a fast one, and the settle time has to cover actually turning your head.
@@ -132,6 +138,9 @@ class Tracker:
         # Tracker must not put a dialog on screen: it is done in tests, and a
         # constructor that raises UI is a side effect nobody asked for.
         self._layout_checked = False
+        self._emphasis = CursorEmphasis(
+            seconds=settings.emphasis_seconds, scale=settings.emphasis_scale
+        )
 
     @staticmethod
     def _calibration_stamp() -> float:
@@ -356,6 +365,7 @@ class Tracker:
             return f"would jump {self.classifier.label(gaze_id)} -> {target[0]:.0f},{target[1]:.0f}"
 
         warp_cursor(*target)
+        self._emphasis.show(*target)
         self._warp_target = target
         self._last_cursor = cursor_position()
         return f"jumped to {self.classifier.label(gaze_id)} at {target[0]:.0f},{target[1]:.0f}"
@@ -428,6 +438,7 @@ class Tracker:
                     self._layout_checked = True
                     self._check_layout(self.displays)
 
+                self._emphasis.tick()
                 self._refresh_displays()
                 self._reload_calibration_if_changed()
                 if self._poll_question():
@@ -460,6 +471,7 @@ class Tracker:
             cap.release()
             if self.settings.preview:
                 cv2.destroyAllWindows()
+            self._emphasis.close()
             if self.settings.recall_position:
                 self.memory.save()
         return 0

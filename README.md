@@ -204,6 +204,24 @@ nix run . -- diag              # live yaw/pitch and the current classification
 `diag` is the one to reach for when something is off: it shows the live pose and
 which monitor it resolves to, and never touches the cursor.
 
+### Finding the cursor after it moves
+
+A cursor that teleports is harder to follow than one that was dragged, and on a
+busy background it can be lost entirely. So on arrival it swells to about the
+size a shake gives it, holds for an instant, then settles back — the same
+vocabulary macOS already uses for shake-to-locate, so it needs no explaining.
+
+```sh
+fancy-tracker flash            # preview it where the cursor is, no camera needed
+```
+
+It is drawn, not applied. The system's own pointer magnification is the
+`mouseDriverCursorSize` accessibility preference, which is global and
+persistent: a crash midway through would leave the cursor stuck large and that
+setting quietly changed. This is a click-through window borrowing the current
+cursor's own artwork, so if the process dies the window goes with it and nothing
+is left behind. `--emphasis-seconds 0` turns it off.
+
 | flag | default | what it does |
 | --- | --- | --- |
 | `--dwell` | 6 | agreeing frames before a look counts as settled |
@@ -213,6 +231,8 @@ which monitor it resolves to, and never touches the cursor.
 | `--mouse-grace` | 0.5 | hold off this long after you move the mouse yourself |
 | `--stickiness` | 0.5 | head start for the monitor you are already on |
 | `--gap-tolerance` | 2.0 | how far off every monitor a look may land before it counts as *between* them |
+| `--emphasis-seconds` | 1.1 | how long the cursor swells on arrival; `0` turns it off |
+| `--emphasis-scale` | 4.0 | how large it swells to |
 | `--no-prompt` | off | don't offer a recalibration when the monitors change |
 | `--min-score` | 0.6 | face-detection confidence floor |
 | `--recall-position` | off | land on the last cursor spot instead of the centre |
